@@ -126,6 +126,15 @@ export class MembershipsRepository {
     return rows.length > 0;
   }
 
+  /** The distinct roles held by the members of an organization. */
+  async rolesInUse(orgId: string, executor: Executor): Promise<OrgRole[]> {
+    const rows = await executor
+      .selectDistinct({ role: memberships.role })
+      .from(memberships)
+      .where(eq(memberships.orgId, orgId));
+    return rows.map((row) => row.role);
+  }
+
   /**
    * The `org_admin`s of an organization, locked (`FOR UPDATE`) until the end
    * of the transaction, so concurrent demotions cannot both pass the

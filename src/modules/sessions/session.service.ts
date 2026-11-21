@@ -203,11 +203,6 @@ export class SessionService {
     );
   }
 
-  /** Housekeeping: drops tokens and sessions that ended before `before`. */
-  prune(before: Date): Promise<{ tokens: number; sessions: number }> {
-    return this.sessions.prune(before);
-  }
-
   private newRefreshToken(now: Date = new Date()): RefreshCookie {
     return {
       token: generateOpaqueToken(),

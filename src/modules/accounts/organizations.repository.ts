@@ -67,6 +67,24 @@ export class OrganizationsRepository {
     return row;
   }
 
+  /**
+   * Reads the row with a share lock (`FOR SHARE`): membership writes that
+   * depend on the organization's kind hold it, so a concurrent kind change
+   * (`FOR UPDATE`) waits for them and sees their result.
+   */
+  async lockForShare(
+    id: string,
+    executor: Executor,
+  ): Promise<OrganizationRow | undefined> {
+    const [row] = await executor
+      .select()
+      .from(organizations)
+      .where(eq(organizations.id, id))
+      .for('share')
+      .limit(1);
+    return row;
+  }
+
   async findBySlug(
     slug: string,
     executor: Executor = this.db,

@@ -6,8 +6,13 @@ import {
 } from '@darmawanweb/ais-its-nest/audit';
 import type { Principal } from '@darmawanweb/ais-its-nest/auth';
 import { type Database, InjectDb } from '@darmawanweb/ais-its-nest/db';
-import { Injectable, Logger } from '@nestjs/common';
+import {
+  type BeforeApplicationShutdown,
+  Injectable,
+  Logger,
+} from '@nestjs/common';
 
+import { BackgroundWork } from '../../common/background-work.js';
 import { AuthErrors } from '../../common/errors.js';
 import { requireUser } from '../../common/principals.js';
 import type { Config } from '../../config.js';
@@ -36,8 +41,9 @@ export type ClientRequest = AuditRequest & { readonly ip?: string | undefined };
  * the other sessions).
  */
 @Injectable()
-export class PasswordService {
-  private readonly logger = new Logger('Passwords');
+export class PasswordService implements BeforeApplicationShutdown {
+  /** Forgot-password lookups and e-mails, finished after the `202`. */
+  private readonly background = new BackgroundWork(new Logger('Passwords'));
 
   constructor(
     @InjectDb() private readonly db: Database<typeof schema>,
@@ -66,15 +72,18 @@ export class PasswordService {
     await this.throttle.consumeForgotPassword(request.ip ?? null);
     const address = normalizeEmail(email);
     const context = { ip: request.ip, headers: request.headers };
-    void this.sendResetLink(
-      address,
-      locale ?? this.config.EMAIL_DEFAULT_LOCALE,
-      context,
-    ).catch((error: unknown) => {
-      this.logger.error(
-        `Password reset request failed: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    });
+    this.background.run('Password reset request', () =>
+      this.sendResetLink(
+        address,
+        locale ?? this.config.EMAIL_DEFAULT_LOCALE,
+        context,
+      ),
+    );
+  }
+
+  /** Lets started reset e-mails finish before NATS drains and the pool closes. */
+  async beforeApplicationShutdown(): Promise<void> {
+    await this.background.drain();
   }
 
   /**

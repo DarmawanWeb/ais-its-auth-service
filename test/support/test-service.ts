@@ -156,7 +156,9 @@ export async function startTestService(
     CORS_ORIGINS: `${WEB_ORIGIN},http://localhost:8000`,
     PUBLIC_BASE_URL: 'http://localhost:8000',
     // TEST_LOG_LEVEL=debug pnpm test:int shows the service logs.
-    ...(process.env.TEST_LOG_LEVEL === undefined ? {} : { LOG_LEVEL: process.env.TEST_LOG_LEVEL }),
+    ...(process.env.TEST_LOG_LEVEL === undefined
+      ? {}
+      : { LOG_LEVEL: process.env.TEST_LOG_LEVEL }),
     ...env,
   });
   const app = await buildTestApp(AppModule, {

@@ -22,11 +22,21 @@ describe('TOTP (RFC 6238: SHA-1, 6 digits, 30 s, window ±1)', () => {
   it('accepts the current, previous and next step and returns the matched counter', () => {
     const now = 1_234_567_890_000;
     const counter = Math.floor(now / 30_000);
-    expect(verifyTotp(RFC_SECRET, generateTotp(RFC_SECRET, now), now)).toBe(counter);
-    expect(verifyTotp(RFC_SECRET, generateTotp(RFC_SECRET, now - 30_000), now)).toBe(counter - 1);
-    expect(verifyTotp(RFC_SECRET, generateTotp(RFC_SECRET, now + 30_000), now)).toBe(counter + 1);
-    expect(verifyTotp(RFC_SECRET, generateTotp(RFC_SECRET, now + 60_000), now)).toBeNull();
-    expect(verifyTotp(RFC_SECRET, generateTotp(RFC_SECRET, now - 60_000), now)).toBeNull();
+    expect(verifyTotp(RFC_SECRET, generateTotp(RFC_SECRET, now), now)).toBe(
+      counter,
+    );
+    expect(
+      verifyTotp(RFC_SECRET, generateTotp(RFC_SECRET, now - 30_000), now),
+    ).toBe(counter - 1);
+    expect(
+      verifyTotp(RFC_SECRET, generateTotp(RFC_SECRET, now + 30_000), now),
+    ).toBe(counter + 1);
+    expect(
+      verifyTotp(RFC_SECRET, generateTotp(RFC_SECRET, now + 60_000), now),
+    ).toBeNull();
+    expect(
+      verifyTotp(RFC_SECRET, generateTotp(RFC_SECRET, now - 60_000), now),
+    ).toBeNull();
   });
 
   it('tolerates spaces and dashes and refuses malformed codes', () => {
@@ -42,7 +52,9 @@ describe('TOTP (RFC 6238: SHA-1, 6 digits, 30 s, window ±1)', () => {
     expect(secret).toMatch(/^[A-Z2-7]{32}$/);
     expect(generateTotpSecret()).not.toBe(secret);
     const uri = totpProvisioningUri(secret, 'captain@example.com');
-    expect(uri).toMatch(/^otpauth:\/\/totp\/AIS%20Maritime%20Intelligence:captain%40example\.com\?/);
+    expect(uri).toMatch(
+      /^otpauth:\/\/totp\/AIS%20Maritime%20Intelligence:captain%40example\.com\?/,
+    );
     expect(uri).toContain(`secret=${secret}`);
     expect(uri).toContain('algorithm=SHA1');
     expect(uri).toContain('digits=6');

@@ -303,6 +303,30 @@ describe('organizations, invitations and members', () => {
     });
     expect(officer.statusCode).toBe(201);
 
+    // The authority role cannot be stranded by turning the organization into a shipping company.
+    const rekind = await service.app.inject({
+      method: 'PATCH',
+      url: `/api/v2/organizations/${authorities.id}`,
+      headers: admin.headers,
+      payload: { kind: 'shipping_company' },
+    });
+    expect(rekind.statusCode).toBe(409);
+    expect(rekind.json()).toMatchObject({
+      code: 'ORGANIZATION_KIND_CONFLICT',
+      roles: ['authority'],
+    });
+    const renamed = await service.app.inject({
+      method: 'PATCH',
+      url: `/api/v2/organizations/${authorities.id}`,
+      headers: admin.headers,
+      payload: { name: 'Demo Syahbandar Utama', kind: 'authority' },
+    });
+    expect(renamed.statusCode).toBe(200);
+    expect(renamed.json()).toMatchObject({
+      name: 'Demo Syahbandar Utama',
+      kind: 'authority',
+    });
+
     const platformId = String(admin.body.activeOrgId);
     const deletePlatform = await service.app.inject({
       method: 'DELETE',

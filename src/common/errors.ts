@@ -167,6 +167,17 @@ export const AuthErrors = {
       title: 'Organization protected',
     }),
 
+  /** A kind change would leave members with roles the new kind cannot grant. */
+  kindStrandsRoles: (kind: string, roles: readonly string[]): ConflictError =>
+    new ConflictError(
+      `Members hold roles an organization of kind ${kind} cannot grant (${roles.join(', ')}); change their roles first`,
+      {
+        code: 'ORGANIZATION_KIND_CONFLICT',
+        title: 'Organization kind conflict',
+        extra: { kind, roles },
+      },
+    ),
+
   roleNotGrantable: (role: string, kind: string): DomainError =>
     new DomainError('ROLE_NOT_GRANTABLE', {
       status: 422,

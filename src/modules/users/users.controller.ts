@@ -1,3 +1,4 @@
+import type { Paginated } from '@darmawanweb/ais-its-contracts/api';
 import {
   CurrentPrincipal,
   type Principal,
@@ -24,7 +25,6 @@ import {
   UpdateUserStatusDto,
 } from './dto/user-input.dto.js';
 import { DirectoryUserDto, MeDto } from './dto/user.dto.js';
-import type { Paginated } from '@darmawanweb/ais-its-contracts/api';
 import { type Profile, UsersService } from './users.service.js';
 
 /** The signed-in user: `/api/v2/me`. */

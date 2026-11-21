@@ -230,9 +230,10 @@ export class SessionsController {
   async switchOrganization(
     @Body() body: SwitchOrganizationDto,
     @CurrentPrincipal() principal: Principal,
+    @Req() request: FastifyRequest,
   ): Promise<SwitchOrganizationResponseDto> {
     return new SwitchOrganizationResponseDto(
-      await this.sessions.switchOrganization(principal, body.orgId),
+      await this.sessions.switchOrganization(principal, body.orgId, request),
     );
   }
 

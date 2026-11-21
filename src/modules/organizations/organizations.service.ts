@@ -21,6 +21,7 @@ import type * as schema from '../../db/schema.js';
 import {
   canViewOrganization,
   type OrganizationKind,
+  rolesStrandedByKind,
 } from '../../domain/access-rules.js';
 import { slugify } from '../../domain/identity.js';
 import { MembershipsRepository } from '../accounts/memberships.repository.js';
@@ -110,32 +111,51 @@ export class OrganizationsService {
     return organization;
   }
 
-  /** Changes name, slug or kind (the platform organization keeps its kind). */
+  /**
+   * Changes name, slug or kind. The platform organization keeps its kind,
+   * and a kind change that would strand members' roles (e.g. `authority`
+   * members of an organization becoming a shipping company) is refused
+   * with `409 ORGANIZATION_KIND_CONFLICT`; the row lock serializes it with
+   * membership writes (they share-lock the organization).
+   */
   async update(
     id: string,
     changes: OrganizationChanges,
     principal: Principal,
     request: AuditRequest,
   ): Promise<OrganizationRow> {
-    const current = await this.organizations.findById(id);
-    if (current === undefined) throw AuthErrors.organizationNotFound(id);
-    if (
-      current.kind === 'platform' &&
-      changes.kind !== undefined &&
-      changes.kind !== 'platform'
-    ) {
-      throw AuthErrors.organizationProtected(
-        'The platform organization cannot change its kind',
-      );
-    }
     const fields = (['name', 'slug', 'kind'] as const).filter(
       (field) => changes[field] !== undefined,
     );
-    if (fields.length === 0) return current;
-    const updated = await uniqueSlug(changes.slug ?? current.slug, () =>
-      this.organizations.update(id, changes),
+    const updated = await uniqueSlug(changes.slug, () =>
+      this.db.transaction(async (tx) => {
+        const current = await this.organizations.lockById(id, tx);
+        if (current === undefined) throw AuthErrors.organizationNotFound(id);
+        const kind = changes.kind;
+        if (
+          current.kind === 'platform' &&
+          kind !== undefined &&
+          kind !== 'platform'
+        ) {
+          throw AuthErrors.organizationProtected(
+            'The platform organization cannot change its kind',
+          );
+        }
+        if (fields.length === 0) return { row: current, changed: false };
+        if (kind !== undefined && kind !== current.kind) {
+          const stranded = rolesStrandedByKind(
+            kind,
+            await this.memberships.rolesInUse(id, tx),
+          );
+          if (stranded.length > 0)
+            throw AuthErrors.kindStrandsRoles(kind, stranded);
+        }
+        const row = await this.organizations.update(id, changes, tx);
+        if (row === undefined) throw AuthErrors.organizationNotFound(id);
+        return { row, changed: true };
+      }),
     );
-    if (updated === undefined) throw AuthErrors.organizationNotFound(id);
+    if (!updated.changed) return updated.row;
     await this.audit.record(
       {
         action: 'organization.update',
@@ -147,7 +167,7 @@ export class OrganizationsService {
       principal,
       request,
     );
-    return updated;
+    return updated.row;
   }
 
   /**
@@ -189,15 +209,21 @@ export class OrganizationsService {
   }
 }
 
-/** Runs a write and maps a taken slug to `409 ORGANIZATION_SLUG_TAKEN`. */
+/**
+ * Runs a write and maps a taken slug to `409 ORGANIZATION_SLUG_TAKEN`
+ * (`slug` is the slug the write sets; `undefined` keeps the current one).
+ */
 async function uniqueSlug<T>(
-  slug: string,
+  slug: string | undefined,
   write: () => Promise<T>,
 ): Promise<T> {
   try {
     return await write();
   } catch (error) {
-    if (isUniqueViolation(error, ORGANIZATION_SLUG_CONSTRAINT))
+    if (
+      slug !== undefined &&
+      isUniqueViolation(error, ORGANIZATION_SLUG_CONSTRAINT)
+    )
       throw AuthErrors.slugTaken(slug);
     throw error;
   }

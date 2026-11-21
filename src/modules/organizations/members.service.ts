@@ -101,10 +101,10 @@ export class MembersService {
     request: AuditRequest,
   ): Promise<AddedMember> {
     const { actor, organization } = await this.manageable(orgId, principal);
-    assertGrantable(organization, input.role);
     const email = normalizeEmail(input.email);
     const { record, created } = await this.conflictsAsProblems(orgId, () =>
       this.db.transaction(async (tx) => {
+        await this.assertGrantableLocked(orgId, input.role, tx);
         const user =
           (await this.users.findByEmail(email, tx)) ??
           (await this.users.insert(
@@ -166,9 +166,9 @@ export class MembersService {
     principal: Principal,
     request: AuditRequest,
   ): Promise<MemberRecord> {
-    const { actor, organization } = await this.manageable(orgId, principal);
-    assertGrantable(organization, role);
+    const { actor } = await this.manageable(orgId, principal);
     const change = await this.db.transaction(async (tx) => {
+      await this.assertGrantableLocked(orgId, role, tx);
       const { membership, user } = await this.lockedMember(
         orgId,
         userId,
@@ -276,6 +276,23 @@ export class MembersService {
     return { membership, user };
   }
 
+  /**
+   * Refuses roles the organization's kind cannot grant (`authority` outside
+   * authority organizations), reading the kind under a share lock so a
+   * concurrent kind change cannot slip in before the write commits.
+   */
+  private async assertGrantableLocked(
+    orgId: string,
+    role: OrgRole,
+    tx: Executor,
+  ): Promise<void> {
+    const organization = await this.organizations.lockForShare(orgId, tx);
+    if (organization === undefined)
+      throw AuthErrors.organizationNotFound(orgId);
+    if (!isRoleGrantable(organization.kind, role))
+      throw AuthErrors.roleNotGrantable(role, organization.kind);
+  }
+
   /** Maps concurrent duplicate inserts (same e-mail, same membership) to `409`. */
   private async conflictsAsProblems<T>(
     orgId: string,
@@ -291,10 +308,4 @@ export class MembersService {
       throw error;
     }
   }
-}
-
-/** Refuses roles the organization's kind cannot grant (`authority` outside authority organizations). */
-function assertGrantable(organization: OrganizationRow, role: OrgRole): void {
-  if (!isRoleGrantable(organization.kind, role))
-    throw AuthErrors.roleNotGrantable(role, organization.kind);
 }

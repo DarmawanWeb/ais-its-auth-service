@@ -146,6 +146,38 @@ describe('central audit log (consumer auth-audit, GET /audit-logs)', () => {
       actorId: null,
       meta: { reason: 'invalid_credentials', stage: 'password' },
     });
+
+    const first = await service.createOrganization();
+    const second = await service.createOrganization();
+    const member = await service.createUser({
+      email: service.email('switcher'),
+      memberships: [
+        { orgId: first.id, role: 'viewer' },
+        { orgId: second.id, role: 'fleet_manager' },
+      ],
+    });
+    const session = await service.login(member.email, TEST_PASSWORD);
+    const fromOrgId = String(session.body.activeOrgId);
+    const target = fromOrgId === first.id ? second.id : first.id;
+    const switched = await service.app.inject({
+      method: 'POST',
+      url: '/api/v2/auth/switch-org',
+      headers: session.headers,
+      payload: { orgId: target },
+    });
+    expect(switched.statusCode).toBe(200);
+    const switchRecord = await waitFor(async () => {
+      const { body } = await auditLogs(
+        admin,
+        `?actorId=${member.id}&action=auth.session.switch_org`,
+      );
+      return body.data[0];
+    });
+    expect(switchRecord).toMatchObject({
+      source: 'auth',
+      orgId: target,
+      meta: { fromOrgId },
+    });
   });
 
   it('keeps audit logs tenant-private and pages through them with a cursor', async () => {

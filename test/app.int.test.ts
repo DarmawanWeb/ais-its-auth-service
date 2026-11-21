@@ -224,6 +224,56 @@ describe(`${SERVICE.packageName} platform behaviour, bootstrap and signing keys`
     expect(denied.statusCode).toBe(403);
   });
 
+  it('retires a rotated key once its successor is older than the grace period', async () => {
+    const pool = service.app.get<unknown, Pool>(PG_POOL);
+    const admin = await service.loginAdmin();
+    const oldKid = decodeProtectedHeader(admin.accessToken).kid;
+    const rotation = await service.app.inject({
+      method: 'POST',
+      url: '/api/v2/auth/keys/rotate',
+      headers: admin.headers,
+    });
+    expect(rotation.statusCode).toBe(200);
+    const newKid = rotation.json<{ kid: string }>().kid;
+
+    // Pretend every key, in order, was created ACCESS_TOKEN_TTL + tolerances (960 s) earlier.
+    await pool.query(
+      `UPDATE signing_keys SET created_at = created_at - interval '961 seconds'`,
+    );
+    await service.app.get(KeyRetirementJob).runOnce();
+
+    const statuses = await pool.query<{
+      kid: string;
+      status: string;
+      retired: boolean;
+    }>(
+      `SELECT kid, status, retired_at IS NOT NULL AS retired FROM signing_keys WHERE kid = ANY($1)`,
+      [[oldKid, newKid]],
+    );
+    expect(
+      Object.fromEntries(statuses.rows.map((row) => [row.kid, row])),
+    ).toEqual({
+      [String(oldKid)]: { kid: oldKid, status: 'retired', retired: true },
+      [newKid]: { kid: newKid, status: 'active', retired: false },
+    });
+    const jwks = await service.app.inject({
+      method: 'GET',
+      url: '/.well-known/jwks.json',
+    });
+    expect(
+      jwks.json<{ keys: { kid: string }[] }>().keys.map((key) => key.kid),
+    ).not.toContain(oldKid);
+    // A token of the retired key is no longer accepted.
+    const stale = await service.app.inject({
+      method: 'GET',
+      url: '/api/v2/me',
+      headers: admin.headers,
+    });
+    expect(stale.statusCode).toBe(401);
+    const fresh = await service.loginAdmin();
+    expect(decodeProtectedHeader(fresh.accessToken).kid).toBe(newKid);
+  });
+
   it('answers the gateway forwardAuth with identity headers, or 401', async () => {
     const admin = await service.loginAdmin();
     const verified = await service.app.inject({

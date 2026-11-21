@@ -1,16 +1,6 @@
 import { type Database, InjectDb } from '@darmawanweb/ais-its-nest/db';
 import { Injectable } from '@nestjs/common';
-import {
-  and,
-  count,
-  desc,
-  eq,
-  ilike,
-  inArray,
-  or,
-  type SQL,
-  sql,
-} from 'drizzle-orm';
+import { and, count, desc, eq, ilike, or, type SQL, sql } from 'drizzle-orm';
 
 import {
   escapeLikePattern,
@@ -72,15 +62,6 @@ export class UsersRepository {
       .where(sql`lower(${users.email}) = lower(${email})`)
       .limit(1);
     return row;
-  }
-
-  /** Several users by id (unknown ids are skipped). */
-  async findByIds(ids: readonly string[]): Promise<UserRow[]> {
-    if (ids.length === 0) return [];
-    return this.db
-      .select()
-      .from(users)
-      .where(inArray(users.id, [...ids]));
   }
 
   /** Inserts a user; a taken e-mail violates {@link USER_EMAIL_CONSTRAINT}. */

@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { clearedRefreshCookieAttributes, REFRESH_COOKIE_NAME, refreshCookieAttributes } from './refresh-cookie.js';
+import {
+  clearedRefreshCookieAttributes,
+  REFRESH_COOKIE_NAME,
+  refreshCookieAttributes,
+} from './refresh-cookie.js';
 
 describe('refresh cookie attributes (spec §8.3)', () => {
   it('is aisits_rt, HttpOnly, SameSite=Strict, scoped to /api/v2/auth, living the token TTL', () => {
@@ -12,7 +16,10 @@ describe('refresh cookie attributes (spec §8.3)', () => {
       path: '/api/v2/auth',
       maxAge: 2_592_000,
     });
-    expect(refreshCookieAttributes(false, 7)).toMatchObject({ secure: false, maxAge: 604_800 });
+    expect(refreshCookieAttributes(false, 7)).toMatchObject({
+      secure: false,
+      maxAge: 604_800,
+    });
   });
 
   it('is cleared with the same scope and Max-Age=0', () => {

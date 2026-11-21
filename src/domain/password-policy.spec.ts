@@ -22,17 +22,29 @@ describe('checkPasswordPolicy (spec §13.1: ≥ 10 characters with letters and d
   });
 
   it('reports every violated rule in a stable order', () => {
-    expect(checkPasswordPolicy('')).toEqual(['too_short', 'missing_letter', 'missing_digit']);
+    expect(checkPasswordPolicy('')).toEqual([
+      'too_short',
+      'missing_letter',
+      'missing_digit',
+    ]);
     expect(checkPasswordPolicy('short1')).toEqual(['too_short']);
     expect(checkPasswordPolicy('onlyletters')).toEqual(['missing_digit']);
     expect(checkPasswordPolicy('1234567890')).toEqual(['missing_letter']);
-    expect(checkPasswordPolicy(`a1${'x'.repeat(PASSWORD_MAX_LENGTH)}`)).toEqual(['too_long']);
+    expect(checkPasswordPolicy(`a1${'x'.repeat(PASSWORD_MAX_LENGTH)}`)).toEqual(
+      ['too_long'],
+    );
   });
 
   it('has the documented bounds and messages', () => {
     expect(PASSWORD_MIN_LENGTH).toBe(10);
-    expect(checkPasswordPolicy(`a1${'x'.repeat(PASSWORD_MAX_LENGTH - 2)}`)).toEqual([]);
-    expect(passwordViolationMessage('too_short')).toBe('must be at least 10 characters long');
-    expect(passwordViolationMessage('missing_digit')).toBe('must contain at least one digit');
+    expect(
+      checkPasswordPolicy(`a1${'x'.repeat(PASSWORD_MAX_LENGTH - 2)}`),
+    ).toEqual([]);
+    expect(passwordViolationMessage('too_short')).toBe(
+      'must be at least 10 characters long',
+    );
+    expect(passwordViolationMessage('missing_digit')).toBe(
+      'must contain at least one digit',
+    );
   });
 });

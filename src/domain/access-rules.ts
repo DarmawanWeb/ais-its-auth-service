@@ -90,6 +90,24 @@ export function isRoleGrantable(
 }
 
 /**
+ * Roles held in an organization that it could no longer grant as `kind`
+ * (e.g. `authority` members when an authority becomes a shipping company).
+ * Such a kind change is refused until those members get another role, so
+ * every membership keeps satisfying {@link grantableRoles}.
+ *
+ * @param rolesInUse the roles of the organization's current members.
+ * @returns the stranded roles, deduplicated and sorted; empty when the change is safe.
+ */
+export function rolesStrandedByKind(
+  kind: OrganizationKind,
+  rolesInUse: readonly OrgRole[],
+): OrgRole[] {
+  return [...new Set(rolesInUse)]
+    .filter((role) => !isRoleGrantable(kind, role))
+    .sort();
+}
+
+/**
  * Last-admin protection: `true` when changing `userId`'s membership to
  * `nextRole` (`null` = removal) would leave the organization without an
  * `org_admin`.

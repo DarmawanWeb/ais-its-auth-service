@@ -1,4 +1,8 @@
-import { type Permission, permissionsForRoles, type Role } from '@darmawanweb/ais-its-contracts/auth';
+import {
+  type Permission,
+  permissionsForRoles,
+  type Role,
+} from '@darmawanweb/ais-its-contracts/auth';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -11,6 +15,7 @@ import {
   grantableRoles,
   isRoleGrantable,
   removesLastAdmin,
+  rolesStrandedByKind,
 } from './access-rules.js';
 
 const ORG = '01a1f000-0000-7000-8000-000000000001';
@@ -65,6 +70,24 @@ describe('access rules (spec §8.4, §8.5, §13.1)', () => {
     expect(isRoleGrantable('shipping_company', 'org_admin')).toBe(true);
   });
 
+  it('refuses kind changes that would strand roles the new kind cannot grant', () => {
+    expect(
+      rolesStrandedByKind('shipping_company', [
+        'authority',
+        'viewer',
+        'authority',
+        'org_admin',
+      ]),
+    ).toEqual(['authority']);
+    expect(
+      rolesStrandedByKind('research', ['org_admin', 'fleet_manager', 'viewer']),
+    ).toEqual([]);
+    expect(rolesStrandedByKind('authority', ['authority', 'viewer'])).toEqual(
+      [],
+    );
+    expect(rolesStrandedByKind('shipping_company', [])).toEqual([]);
+  });
+
   it('never removes or demotes the last org_admin', () => {
     expect(removesLastAdmin(['a'], 'a', null)).toBe(true);
     expect(removesLastAdmin(['a'], 'a', 'viewer')).toBe(true);
@@ -76,7 +99,10 @@ describe('access rules (spec §8.4, §8.5, §13.1)', () => {
 
   it('builds token roles from the membership plus the platform role', () => {
     expect(accessRoles('fleet_manager', false)).toEqual(['fleet_manager']);
-    expect(accessRoles('org_admin', true)).toEqual(['org_admin', 'super_admin']);
+    expect(accessRoles('org_admin', true)).toEqual([
+      'org_admin',
+      'super_admin',
+    ]);
     expect(accessRoles(null, true)).toEqual(['super_admin']);
     expect(accessRoles(null, false)).toEqual([]);
   });

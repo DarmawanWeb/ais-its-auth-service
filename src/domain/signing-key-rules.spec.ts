@@ -13,7 +13,13 @@ describe('signing key life cycle', () => {
 });
 
 describe('needsRehash (argon2id m=19456, t=2, p=1)', () => {
-  const current = { algorithm: 2, memoryCost: 19_456, timeCost: 2, parallelism: 1, outputLen: 32 };
+  const current = {
+    algorithm: 2,
+    memoryCost: 19_456,
+    timeCost: 2,
+    parallelism: 1,
+    outputLen: 32,
+  };
 
   it('keeps hashes made with the current parameters', () => {
     expect(needsRehash(current)).toBe(false);

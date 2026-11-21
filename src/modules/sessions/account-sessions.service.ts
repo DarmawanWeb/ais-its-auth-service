@@ -94,15 +94,16 @@ export class AccountSessionsService {
   /**
    * Makes `orgId` the active organization of the current session and issues
    * an access token with the roles of that membership (spec §13.1: members
-   * only, or super admins).
+   * only, or super admins). Recorded as `auth.session.switch_org`.
    */
   async switchOrganization(
     principal: Principal,
     orgId: string,
+    request: AuditRequest,
   ): Promise<SwitchedOrganization> {
     const actor = requireUser(principal);
     const user = await this.users.findById(actor.id);
-    if (user === undefined) throw AuthErrors.invalidRefreshToken();
+    if (user === undefined) throw AuthErrors.userNotFound(actor.id);
     if (user.status !== 'active') throw AuthErrors.accountDisabled();
     const membership = await this.memberships.find(user.id, orgId);
     if (membership === undefined) {
@@ -116,14 +117,28 @@ export class AccountSessionsService {
         'The session was revoked; sign in again',
       );
     }
+    const roles = accessRoles(membership?.role ?? null, user.isPlatformAdmin);
     const access = await this.tokens.issueAccessToken({
       userId: user.id,
       sessionId: actor.sessionId,
       orgId,
-      roles: accessRoles(membership?.role ?? null, user.isPlatformAdmin),
+      roles,
       email: user.email,
       name: user.name,
     });
+    if (actor.orgId !== orgId) {
+      await this.audit.record(
+        {
+          action: 'auth.session.switch_org',
+          targetType: 'session',
+          targetId: actor.sessionId,
+          orgId,
+          meta: { fromOrgId: actor.orgId, roles },
+        },
+        actor,
+        request,
+      );
+    }
     return { access, activeOrgId: orgId };
   }
 }
