@@ -1,0 +1,3359 @@
+{
+  "openapi": "3.0.0",
+  "paths": {
+    "/.well-known/jwks.json": {
+      "get": {
+        "operationId": "JwksController_jwks",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JwksDto"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem details (RFC 9457)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ],
+        "summary": "Public keys of the access token signer (active and retiring keys)",
+        "tags": [
+          "keys"
+        ]
+      }
+    },
+    "/api/v2/auth/keys/rotate": {
+      "post": {
+        "operationId": "KeysController_rotate",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KeyRotationDto"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem details (RFC 9457)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Rotate the signing key (super_admin): the active key becomes retiring",
+        "tags": [
+          "keys"
+        ]
+      }
+    },
+    "/api/v2/auth/login": {
+      "post": {
+        "operationId": "AuthController_login",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/LoginResponseDto"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MfaChallengeDto"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "INVALID_CREDENTIALS"
+          },
+          "429": {
+            "description": "RATE_LIMITED (Retry-After)"
+          },
+          "default": {
+            "description": "Problem details (RFC 9457)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ],
+        "summary": "Sign in with e-mail and password (sets the refresh cookie, or asks for the MFA code)",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v2/auth/mfa/verify": {
+      "post": {
+        "operationId": "AuthController_verifyMfa",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MfaVerifyDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginResponseDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "INVALID_MFA_CODE or an invalid MFA token"
+          },
+          "429": {
+            "description": "RATE_LIMITED (Retry-After)"
+          },
+          "default": {
+            "description": "Problem details (RFC 9457)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ],
+        "summary": "Complete an MFA sign-in with the TOTP code (sets the refresh cookie)",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v2/auth/refresh": {
+      "post": {
+        "operationId": "AuthController_refresh",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccessTokenDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "INVALID_REFRESH_TOKEN or REFRESH_TOKEN_REUSED (session revoked)"
+          },
+          "403": {
+            "description": "ORIGIN_NOT_ALLOWED, ACCOUNT_DISABLED"
+          },
+          "default": {
+            "description": "Problem details (RFC 9457)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "aisits_rt": []
+          },
+          {}
+        ],
+        "summary": "Rotate the refresh cookie and get a new access token",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v2/auth/logout": {
+      "post": {
+        "operationId": "AuthController_logout",
+        "parameters": [],
+        "responses": {
+          "204": {
+            "description": ""
+          },
+          "default": {
+            "description": "Problem details (RFC 9457)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "aisits_rt": []
+          },
+          {}
+        ],
+        "summary": "Sign out: revoke the session of the refresh cookie and clear it",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v2/auth/verify": {
+      "get": {
+        "operationId": "VerifyController_verify",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VerifiedTokenDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "default": {
+            "description": "Problem details (RFC 9457)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ],
+        "summary": "Validate a bearer token for Traefik forwardAuth (X-User-Id, X-Org-Id, X-Roles)",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v2/auth/switch-org": {
+      "post": {
+        "operationId": "SessionsController_switchOrganization",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SwitchOrganizationDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SwitchOrganizationResponseDto"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem details (RFC 9457)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Switch the active organization of the session (members, or super admins)",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v2/auth/sessions": {
+      "get": {
+        "operationId": "SessionsController_list",
+        "parameters": [
+          {
+            "name": "page",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "minimum": 1,
+              "default": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "name": "pageSize",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of the list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/SessionDto"
+                      }
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/PageMetaDto"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem details (RFC 9457)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "summary": "List the own active sessions",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v2/auth/sessions/{id}": {
+      "delete": {
+        "operationId": "SessionsController_revoke",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": ""
+          },
+          "default": {
+            "description": "Problem details (RFC 9457)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Revoke one of the own sessions (sign out a device)",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v2/auth/mfa/setup": {
+      "post": {
+        "operationId": "MfaController_setup",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MfaSetupDto"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem details (RFC 9457)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Start the TOTP enrollment (returns the secret and the otpauth URI)",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v2/auth/mfa/enable": {
+      "post": {
+        "operationId": "MfaController_enable",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MfaCodeDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": ""
+          },
+          "default": {
+            "description": "Problem details (RFC 9457)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Enable MFA with the first code of the authenticator app",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v2/auth/mfa/disable": {
+      "post": {
+        "operationId": "MfaController_disable",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MfaCodeDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": ""
+          },
+          "default": {
+            "description": "Problem details (RFC 9457)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Disable MFA with a current code",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v2/auth/password/forgot": {
+      "post": {
+        "operationId": "PasswordsController_forgot",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ForgotPasswordDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Accepted (whether or not the address exists)"
+          },
+          "default": {
+            "description": "Problem details (RFC 9457)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ],
+        "summary": "Request a password reset link by e-mail (always 202; throttled per IP and address)",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v2/auth/password/reset": {
+      "post": {
+        "operationId": "PasswordsController_reset",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResetPasswordDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": ""
+          },
+          "default": {
+            "description": "Problem details (RFC 9457)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ],
+        "summary": "Set a new password with a reset or invitation token (revokes every session)",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v2/auth/password/change": {
+      "post": {
+        "operationId": "PasswordsController_change",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangePasswordDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": ""
+          },
+          "default": {
+            "description": "Problem details (RFC 9457)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Change the own password (revokes the other sessions)",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v2/me": {
+      "get": {
+        "operationId": "MeController_me",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeDto"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem details (RFC 9457)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "summary": "The signed-in user, memberships, active organization, roles and permissions",
+        "tags": [
+          "me"
+        ]
+      },
+      "patch": {
+        "operationId": "MeController_update",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateMeDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeDto"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem details (RFC 9457)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Change the own display name",
+        "tags": [
+          "me"
+        ]
+      }
+    },
+    "/api/v2/users": {
+      "get": {
+        "operationId": "UsersController_list",
+        "parameters": [
+          {
+            "name": "page",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "minimum": 1,
+              "default": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "name": "pageSize",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20,
+              "type": "integer"
+            }
+          },
+          {
+            "name": "search",
+            "required": false,
+            "in": "query",
+            "description": "Case-insensitive substring of the e-mail or name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "active",
+                "invited",
+                "disabled"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of the list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/DirectoryUserDto"
+                      }
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/PageMetaDto"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem details (RFC 9457)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Search the users of the platform",
+        "tags": [
+          "users"
+        ],
+        "x-required-permissions": [
+          "org:manage"
+        ]
+      }
+    },
+    "/api/v2/users/{id}": {
+      "patch": {
+        "operationId": "UsersController_setStatus",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateUserStatusDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DirectoryUserDto"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem details (RFC 9457)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Enable or disable an account (disabling revokes its sessions)",
+        "tags": [
+          "users"
+        ],
+        "x-required-permissions": [
+          "org:manage"
+        ]
+      }
+    },
+    "/api/v2/organizations": {
+      "get": {
+        "operationId": "OrganizationsController_list",
+        "parameters": [
+          {
+            "name": "page",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "minimum": 1,
+              "default": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "name": "pageSize",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20,
+              "type": "integer"
+            }
+          },
+          {
+            "name": "search",
+            "required": false,
+            "in": "query",
+            "description": "Case-insensitive substring of the name or slug",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "kind",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "shipping_company",
+                "authority",
+                "platform",
+                "research"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of the list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/OrganizationDto"
+                      }
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/PageMetaDto"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem details (RFC 9457)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "summary": "List organizations (super admins)",
+        "tags": [
+          "organizations"
+        ],
+        "x-required-permissions": [
+          "org:manage"
+        ]
+      },
+      "post": {
+        "operationId": "OrganizationsController_create",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateOrganizationDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrganizationDto"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem details (RFC 9457)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Create an organization (super admins)",
+        "tags": [
+          "organizations"
+        ],
+        "x-required-permissions": [
+          "org:manage"
+        ]
+      }
+    },
+    "/api/v2/organizations/{id}": {
+      "get": {
+        "operationId": "OrganizationsController_get",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrganizationDto"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem details (RFC 9457)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Get an organization (super admins, or its members)",
+        "tags": [
+          "organizations"
+        ]
+      },
+      "patch": {
+        "operationId": "OrganizationsController_update",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateOrganizationDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrganizationDto"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem details (RFC 9457)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Change the name, slug or kind of an organization (super admins)",
+        "tags": [
+          "organizations"
+        ],
+        "x-required-permissions": [
+          "org:manage"
+        ]
+      },
+      "delete": {
+        "operationId": "OrganizationsController_remove",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": ""
+          },
+          "default": {
+            "description": "Problem details (RFC 9457)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Delete an organization with its memberships and API keys (super admins)",
+        "tags": [
+          "organizations"
+        ],
+        "x-required-permissions": [
+          "org:manage"
+        ]
+      }
+    },
+    "/api/v2/organizations/{id}/members": {
+      "get": {
+        "operationId": "MembersController_list",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "minimum": 1,
+              "default": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "name": "pageSize",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of the list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/MemberDto"
+                      }
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/PageMetaDto"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem details (RFC 9457)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "summary": "List the members of an organization",
+        "tags": [
+          "organizations"
+        ],
+        "x-required-permissions": [
+          "user:manage"
+        ]
+      },
+      "post": {
+        "operationId": "MembersController_add",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddMemberDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AddedMemberDto"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem details (RFC 9457)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Add a member; unknown e-mails become invited accounts and receive an invitation",
+        "tags": [
+          "organizations"
+        ],
+        "x-required-permissions": [
+          "user:manage"
+        ]
+      }
+    },
+    "/api/v2/organizations/{id}/members/{userId}": {
+      "patch": {
+        "operationId": "MembersController_update",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "userId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateMemberDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemberDto"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem details (RFC 9457)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Change a member's role (the last org_admin cannot be demoted)",
+        "tags": [
+          "organizations"
+        ],
+        "x-required-permissions": [
+          "user:manage"
+        ]
+      },
+      "delete": {
+        "operationId": "MembersController_remove",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "userId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": ""
+          },
+          "default": {
+            "description": "Problem details (RFC 9457)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Remove a member (not the last org_admin) and revoke their sessions in the organization",
+        "tags": [
+          "organizations"
+        ],
+        "x-required-permissions": [
+          "user:manage"
+        ]
+      }
+    },
+    "/api/v2/api-keys": {
+      "get": {
+        "operationId": "ApiKeysController_list",
+        "parameters": [
+          {
+            "name": "page",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "minimum": 1,
+              "default": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "name": "pageSize",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20,
+              "type": "integer"
+            }
+          },
+          {
+            "name": "orgId",
+            "required": false,
+            "in": "query",
+            "description": "Organization (super admins; others see their active one)",
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "name": "includeRevoked",
+            "required": false,
+            "in": "query",
+            "description": "Include revoked keys",
+            "schema": {
+              "default": false,
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of the list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/ApiKeyDto"
+                      }
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/PageMetaDto"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem details (RFC 9457)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "summary": "List the API keys of the active organization (super admins: all or ?orgId)",
+        "tags": [
+          "api-keys"
+        ],
+        "x-required-permissions": [
+          "api_key:manage"
+        ]
+      },
+      "post": {
+        "operationId": "ApiKeysController_create",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateApiKeyDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatedApiKeyDto"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem details (RFC 9457)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Create an API key (the key is returned once)",
+        "tags": [
+          "api-keys"
+        ],
+        "x-required-permissions": [
+          "api_key:manage"
+        ]
+      }
+    },
+    "/api/v2/api-keys/{id}": {
+      "delete": {
+        "operationId": "ApiKeysController_revoke",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": ""
+          },
+          "default": {
+            "description": "Problem details (RFC 9457)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Revoke an API key",
+        "tags": [
+          "api-keys"
+        ],
+        "x-required-permissions": [
+          "api_key:manage"
+        ]
+      }
+    },
+    "/internal/api-keys/introspect": {
+      "post": {
+        "operationId": "InternalApiKeysController_introspect",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IntrospectApiKeyDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiKeyIntrospectionDto"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem details (RFC 9457)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "internalToken": []
+          },
+          {
+            "internalToken": []
+          }
+        ],
+        "summary": "Resolve an API key to its organization and scopes (services only)",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
+    "/api/v2/audit-logs": {
+      "get": {
+        "operationId": "AuditLogsController_list",
+        "parameters": [
+          {
+            "name": "cursor",
+            "required": false,
+            "in": "query",
+            "description": "Opaque cursor from `page.nextCursor` of the previous page",
+            "schema": {
+              "maxLength": 1024,
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "minimum": 1,
+              "maximum": 500,
+              "default": 100,
+              "type": "integer"
+            }
+          },
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Start (ISO-8601); default: endpoint specific",
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "End (ISO-8601); default: now",
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "name": "actorId",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "name": "action",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "example": "auth.login.failed",
+              "type": "string"
+            }
+          },
+          {
+            "name": "targetType",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "example": "user",
+              "type": "string"
+            }
+          },
+          {
+            "name": "targetId",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "orgId",
+            "required": false,
+            "in": "query",
+            "description": "Organization (super admins; others read their active organization)",
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of the time-ordered list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "data",
+                    "page"
+                  ],
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/AuditLogDto"
+                      }
+                    },
+                    "page": {
+                      "$ref": "#/components/schemas/CursorPageInfoDto"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem details (RFC 9457)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Audit records of the active organization (super admins: all), newest first",
+        "tags": [
+          "audit-logs"
+        ],
+        "x-required-permissions": [
+          "audit:read"
+        ]
+      }
+    },
+    "/api/v2/auth/methodology": {
+      "get": {
+        "operationId": "MethodologyController_describe",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MethodologyDto"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem details (RFC 9457)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Methods implemented by this service, with their sources",
+        "tags": [
+          "methodology"
+        ]
+      }
+    }
+  },
+  "info": {
+    "title": "AIS Maritime Intelligence — AIS ITS Auth Service",
+    "description": "Identity, organizations, memberships and roles, sessions, JWT signing keys and JWKS, API keys, MFA and the central audit log",
+    "version": "0.1.0",
+    "contact": {}
+  },
+  "tags": [
+    {
+      "name": "auth",
+      "description": "Sign-in, MFA, sessions, refresh tokens and password flows"
+    },
+    {
+      "name": "me",
+      "description": "The signed-in user"
+    },
+    {
+      "name": "organizations",
+      "description": "Organizations (tenants) and their members"
+    },
+    {
+      "name": "users",
+      "description": "Platform user directory (super admins)"
+    },
+    {
+      "name": "api-keys",
+      "description": "API keys of machine clients"
+    },
+    {
+      "name": "audit-logs",
+      "description": "Central audit log of every service"
+    },
+    {
+      "name": "keys",
+      "description": "JWT signing keys and the JWKS"
+    },
+    {
+      "name": "internal",
+      "description": "Service-to-service endpoints (X-Internal-Token)"
+    },
+    {
+      "name": "methodology",
+      "description": "Methods of the methodology catalog implemented here"
+    }
+  ],
+  "servers": [],
+  "components": {
+    "securitySchemes": {
+      "bearer": {
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "type": "http",
+        "description": "Access token (EdDSA JWT)"
+      },
+      "apiKey": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-Key",
+        "description": "API key sk_<id>_<secret>"
+      },
+      "internalToken": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Internal-Token",
+        "description": "Service-to-service token"
+      }
+    },
+    "schemas": {
+      "JwkDto": {
+        "type": "object",
+        "properties": {
+          "kty": {
+            "type": "string",
+            "enum": [
+              "OKP"
+            ]
+          },
+          "crv": {
+            "type": "string",
+            "enum": [
+              "Ed25519"
+            ]
+          },
+          "x": {
+            "type": "string",
+            "description": "Public key, base64url"
+          },
+          "kid": {
+            "type": "string",
+            "description": "Key id: RFC 7638 thumbprint (SHA-256, base64url)"
+          },
+          "alg": {
+            "type": "string",
+            "enum": [
+              "EdDSA"
+            ]
+          },
+          "use": {
+            "type": "string",
+            "enum": [
+              "sig"
+            ]
+          }
+        },
+        "required": [
+          "kty",
+          "crv",
+          "x",
+          "kid",
+          "alg",
+          "use"
+        ]
+      },
+      "JwksDto": {
+        "type": "object",
+        "properties": {
+          "keys": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/JwkDto"
+            }
+          }
+        },
+        "required": [
+          "keys"
+        ]
+      },
+      "KeyRotationDto": {
+        "type": "object",
+        "properties": {
+          "kid": {
+            "type": "string",
+            "description": "Kid of the new active key"
+          },
+          "previousKid": {
+            "type": "string",
+            "nullable": true,
+            "description": "Kid of the key that is now retiring (still published until it retires)"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "kid",
+          "previousKid",
+          "createdAt"
+        ]
+      },
+      "UserDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "email": {
+            "type": "string",
+            "example": "captain@example.com"
+          },
+          "name": {
+            "type": "string",
+            "example": "Siti Rahma"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "invited",
+              "disabled"
+            ]
+          },
+          "mfaEnabled": {
+            "type": "boolean"
+          },
+          "isPlatformAdmin": {
+            "type": "boolean",
+            "description": "Holds the platform role super_admin"
+          },
+          "lastLoginAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "name",
+          "status",
+          "mfaEnabled",
+          "isPlatformAdmin",
+          "lastLoginAt",
+          "createdAt",
+          "updatedAt"
+        ]
+      },
+      "MembershipDto": {
+        "type": "object",
+        "properties": {
+          "orgId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "orgName": {
+            "type": "string",
+            "example": "PT Pelayaran Nusantara"
+          },
+          "orgSlug": {
+            "type": "string",
+            "example": "pelayaran-nusantara"
+          },
+          "orgKind": {
+            "type": "string",
+            "enum": [
+              "shipping_company",
+              "authority",
+              "platform",
+              "research"
+            ]
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "org_admin",
+              "fleet_manager",
+              "authority",
+              "viewer"
+            ]
+          },
+          "joinedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "orgId",
+          "orgName",
+          "orgSlug",
+          "orgKind",
+          "role",
+          "joinedAt"
+        ]
+      },
+      "LoginResponseDto": {
+        "type": "object",
+        "properties": {
+          "accessToken": {
+            "type": "string",
+            "description": "EdDSA JWT (spec §8.2)"
+          },
+          "expiresIn": {
+            "type": "number",
+            "example": 900,
+            "description": "Lifetime in seconds"
+          },
+          "user": {
+            "$ref": "#/components/schemas/UserDto"
+          },
+          "memberships": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MembershipDto"
+            }
+          },
+          "activeOrgId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          }
+        },
+        "required": [
+          "accessToken",
+          "expiresIn",
+          "user",
+          "memberships",
+          "activeOrgId"
+        ]
+      },
+      "MfaChallengeDto": {
+        "type": "object",
+        "properties": {
+          "mfaRequired": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "mfaToken": {
+            "type": "string",
+            "description": "5-minute single-use challenge token"
+          }
+        },
+        "required": [
+          "mfaRequired",
+          "mfaToken"
+        ]
+      },
+      "LoginDto": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "example": "admin@ais-its.local",
+            "maxLength": 320
+          },
+          "password": {
+            "type": "string",
+            "format": "password",
+            "maxLength": 1024
+          }
+        },
+        "required": [
+          "email",
+          "password"
+        ]
+      },
+      "MfaVerifyDto": {
+        "type": "object",
+        "properties": {
+          "mfaToken": {
+            "type": "string",
+            "description": "mfaToken of the login response (5 minutes, single use)"
+          },
+          "code": {
+            "type": "string",
+            "example": "123456",
+            "description": "6-digit code of the authenticator app"
+          }
+        },
+        "required": [
+          "mfaToken",
+          "code"
+        ]
+      },
+      "AccessTokenDto": {
+        "type": "object",
+        "properties": {
+          "accessToken": {
+            "type": "string",
+            "description": "EdDSA JWT (spec §8.2)"
+          },
+          "expiresIn": {
+            "type": "number",
+            "example": 900,
+            "description": "Lifetime in seconds"
+          }
+        },
+        "required": [
+          "accessToken",
+          "expiresIn"
+        ]
+      },
+      "VerifiedTokenDto": {
+        "type": "object",
+        "properties": {
+          "userId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "orgId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "roles": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "super_admin",
+                "org_admin",
+                "fleet_manager",
+                "authority",
+                "viewer"
+              ]
+            }
+          }
+        },
+        "required": [
+          "userId",
+          "orgId",
+          "roles"
+        ]
+      },
+      "SwitchOrganizationDto": {
+        "type": "object",
+        "properties": {
+          "orgId": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "orgId"
+        ]
+      },
+      "SwitchOrganizationResponseDto": {
+        "type": "object",
+        "properties": {
+          "accessToken": {
+            "type": "string",
+            "description": "EdDSA JWT (spec §8.2)"
+          },
+          "expiresIn": {
+            "type": "number",
+            "example": 900,
+            "description": "Lifetime in seconds"
+          },
+          "activeOrgId": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "accessToken",
+          "expiresIn",
+          "activeOrgId"
+        ]
+      },
+      "SessionDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "orgId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true,
+            "description": "Active organization"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lastUsedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "ip": {
+            "type": "string",
+            "nullable": true
+          },
+          "userAgent": {
+            "type": "string",
+            "nullable": true
+          },
+          "current": {
+            "type": "boolean",
+            "description": "The session of the calling access token"
+          }
+        },
+        "required": [
+          "id",
+          "orgId",
+          "createdAt",
+          "lastUsedAt",
+          "ip",
+          "userAgent",
+          "current"
+        ]
+      },
+      "PageMetaDto": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "pageSize": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of items across all pages"
+          }
+        },
+        "required": [
+          "page",
+          "pageSize",
+          "total"
+        ]
+      },
+      "MfaSetupDto": {
+        "type": "object",
+        "properties": {
+          "secret": {
+            "type": "string",
+            "description": "Base32 secret for manual entry"
+          },
+          "otpauthUrl": {
+            "type": "string",
+            "description": "otpauth://totp/… URI for the QR code"
+          }
+        },
+        "required": [
+          "secret",
+          "otpauthUrl"
+        ]
+      },
+      "MfaCodeDto": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "example": "123456",
+            "description": "6-digit code of the authenticator app"
+          }
+        },
+        "required": [
+          "code"
+        ]
+      },
+      "ForgotPasswordDto": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "example": "captain@example.com",
+            "maxLength": 320
+          },
+          "locale": {
+            "type": "string",
+            "enum": [
+              "id",
+              "en"
+            ],
+            "description": "Language of the e-mail"
+          }
+        },
+        "required": [
+          "email"
+        ]
+      },
+      "ResetPasswordDto": {
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "Token of the e-mailed link (`#token=…`)",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "password": {
+            "type": "string",
+            "description": "At least 10 characters with letters and digits (at most 128)",
+            "format": "password",
+            "maxLength": 1024
+          }
+        },
+        "required": [
+          "token",
+          "password"
+        ]
+      },
+      "ChangePasswordDto": {
+        "type": "object",
+        "properties": {
+          "currentPassword": {
+            "type": "string",
+            "format": "password",
+            "maxLength": 1024
+          },
+          "newPassword": {
+            "type": "string",
+            "description": "At least 10 characters with letters and digits (at most 128)",
+            "format": "password",
+            "maxLength": 1024
+          }
+        },
+        "required": [
+          "currentPassword",
+          "newPassword"
+        ]
+      },
+      "MeDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "email": {
+            "type": "string",
+            "example": "captain@example.com"
+          },
+          "name": {
+            "type": "string",
+            "example": "Siti Rahma"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "invited",
+              "disabled"
+            ]
+          },
+          "mfaEnabled": {
+            "type": "boolean"
+          },
+          "isPlatformAdmin": {
+            "type": "boolean",
+            "description": "Holds the platform role super_admin"
+          },
+          "lastLoginAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "memberships": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MembershipDto"
+            }
+          },
+          "activeOrgId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true,
+            "description": "Active organization of the token"
+          },
+          "roles": {
+            "type": "array",
+            "description": "Roles of the token",
+            "items": {
+              "type": "string",
+              "enum": [
+                "super_admin",
+                "org_admin",
+                "fleet_manager",
+                "authority",
+                "viewer"
+              ]
+            }
+          },
+          "permissions": {
+            "type": "array",
+            "description": "Permissions of those roles",
+            "items": {
+              "type": "string",
+              "enum": [
+                "vessel:read",
+                "vessel:write",
+                "reference:write",
+                "ais:read",
+                "telemetry:read",
+                "telemetry:write",
+                "device:manage",
+                "cii:read",
+                "seemp:read",
+                "seemp:simulate",
+                "safety:read",
+                "surveillance:read",
+                "surveillance:review",
+                "zone:read",
+                "zone:write",
+                "alert:read",
+                "alert:ack",
+                "alert_rule:write",
+                "user:manage",
+                "org:manage",
+                "api_key:manage",
+                "audit:read",
+                "report:read"
+              ]
+            }
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "name",
+          "status",
+          "mfaEnabled",
+          "isPlatformAdmin",
+          "lastLoginAt",
+          "createdAt",
+          "updatedAt",
+          "memberships",
+          "activeOrgId",
+          "roles",
+          "permissions"
+        ]
+      },
+      "UpdateMeDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "example": "Siti Rahma"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "UserMembershipDto": {
+        "type": "object",
+        "properties": {
+          "orgId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "org_admin",
+              "fleet_manager",
+              "authority",
+              "viewer"
+            ]
+          }
+        },
+        "required": [
+          "orgId",
+          "role"
+        ]
+      },
+      "DirectoryUserDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "email": {
+            "type": "string",
+            "example": "captain@example.com"
+          },
+          "name": {
+            "type": "string",
+            "example": "Siti Rahma"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "invited",
+              "disabled"
+            ]
+          },
+          "mfaEnabled": {
+            "type": "boolean"
+          },
+          "isPlatformAdmin": {
+            "type": "boolean",
+            "description": "Holds the platform role super_admin"
+          },
+          "lastLoginAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "memberships": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UserMembershipDto"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "name",
+          "status",
+          "mfaEnabled",
+          "isPlatformAdmin",
+          "lastLoginAt",
+          "createdAt",
+          "updatedAt",
+          "memberships"
+        ]
+      },
+      "UpdateUserStatusDto": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "disabled"
+            ],
+            "description": "disabled revokes every session; active re-enables a disabled account"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "OrganizationDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string",
+            "example": "PT Pelayaran Nusantara"
+          },
+          "slug": {
+            "type": "string",
+            "example": "pelayaran-nusantara"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "shipping_company",
+              "authority",
+              "platform",
+              "research"
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "slug",
+          "kind",
+          "createdAt",
+          "updatedAt"
+        ]
+      },
+      "CreateOrganizationDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "example": "PT Pelayaran Nusantara"
+          },
+          "slug": {
+            "type": "string",
+            "maxLength": 63,
+            "description": "Unique handle matching ^[a-z0-9]+(?:-[a-z0-9]+)*$; derived from the name when omitted",
+            "example": "pelayaran-nusantara"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "shipping_company",
+              "authority",
+              "research"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "kind"
+        ]
+      },
+      "UpdateOrganizationDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "slug": {
+            "type": "string",
+            "maxLength": 63
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "shipping_company",
+              "authority",
+              "research"
+            ]
+          }
+        }
+      },
+      "MemberDto": {
+        "type": "object",
+        "properties": {
+          "userId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "email": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "invited",
+              "disabled"
+            ]
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "org_admin",
+              "fleet_manager",
+              "authority",
+              "viewer"
+            ]
+          },
+          "mfaEnabled": {
+            "type": "boolean"
+          },
+          "lastLoginAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "joinedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "userId",
+          "email",
+          "name",
+          "status",
+          "role",
+          "mfaEnabled",
+          "lastLoginAt",
+          "joinedAt"
+        ]
+      },
+      "AddMemberDto": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "example": "officer@example.com",
+            "maxLength": 320
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "Display name of a new account"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "org_admin",
+              "fleet_manager",
+              "authority",
+              "viewer"
+            ]
+          },
+          "locale": {
+            "type": "string",
+            "enum": [
+              "id",
+              "en"
+            ],
+            "description": "Language of the invitation e-mail"
+          }
+        },
+        "required": [
+          "email",
+          "name",
+          "role"
+        ]
+      },
+      "AddedMemberDto": {
+        "type": "object",
+        "properties": {
+          "userId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "email": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "invited",
+              "disabled"
+            ]
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "org_admin",
+              "fleet_manager",
+              "authority",
+              "viewer"
+            ]
+          },
+          "mfaEnabled": {
+            "type": "boolean"
+          },
+          "lastLoginAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "joinedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "invitationSent": {
+            "type": "boolean",
+            "description": "An invitation e-mail was requested (new or not yet activated accounts)"
+          }
+        },
+        "required": [
+          "userId",
+          "email",
+          "name",
+          "status",
+          "role",
+          "mfaEnabled",
+          "lastLoginAt",
+          "joinedAt",
+          "invitationSent"
+        ]
+      },
+      "UpdateMemberDto": {
+        "type": "object",
+        "properties": {
+          "role": {
+            "type": "string",
+            "enum": [
+              "org_admin",
+              "fleet_manager",
+              "authority",
+              "viewer"
+            ]
+          }
+        },
+        "required": [
+          "role"
+        ]
+      },
+      "ApiKeyDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "orgId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string",
+            "example": "AIS pusher Batam"
+          },
+          "prefix": {
+            "type": "string",
+            "example": "sk_7Hq2LmZx9a",
+            "description": "Public part of the key (sk_<id>)"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "ais:ingest",
+                "telemetry:ingest",
+                "ais:read"
+              ]
+            }
+          },
+          "createdBy": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "lastUsedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "revokedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "orgId",
+          "name",
+          "prefix",
+          "scopes",
+          "createdBy",
+          "lastUsedAt",
+          "revokedAt",
+          "createdAt"
+        ]
+      },
+      "CreateApiKeyDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100,
+            "example": "AIS pusher Batam"
+          },
+          "scopes": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "enum": [
+                "ais:ingest",
+                "telemetry:ingest",
+                "ais:read"
+              ]
+            }
+          },
+          "orgId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Owning organization (super admins); others create keys in their active organization"
+          }
+        },
+        "required": [
+          "name",
+          "scopes"
+        ]
+      },
+      "ApiKeyWithSecretDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "orgId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string",
+            "example": "AIS pusher Batam"
+          },
+          "prefix": {
+            "type": "string",
+            "example": "sk_7Hq2LmZx9a",
+            "description": "Public part of the key (sk_<id>)"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "ais:ingest",
+                "telemetry:ingest",
+                "ais:read"
+              ]
+            }
+          },
+          "createdBy": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "lastUsedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "revokedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "key": {
+            "type": "string",
+            "example": "sk_7Hq2LmZx9a_9vQ4hD2kP0sWmX7cBnR5tY1uE3oL8aZ6",
+            "description": "The full key: shown once, store it now"
+          }
+        },
+        "required": [
+          "id",
+          "orgId",
+          "name",
+          "prefix",
+          "scopes",
+          "createdBy",
+          "lastUsedAt",
+          "revokedAt",
+          "createdAt",
+          "key"
+        ]
+      },
+      "CreatedApiKeyDto": {
+        "type": "object",
+        "properties": {
+          "apiKey": {
+            "$ref": "#/components/schemas/ApiKeyWithSecretDto"
+          }
+        },
+        "required": [
+          "apiKey"
+        ]
+      },
+      "IntrospectApiKeyDto": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "The presented X-API-Key value"
+          }
+        },
+        "required": [
+          "key"
+        ]
+      },
+      "ApiKeyIntrospectionDto": {
+        "type": "object",
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "keyId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "orgId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "ais:ingest",
+                "telemetry:ingest",
+                "ais:read"
+              ]
+            }
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "active"
+        ]
+      },
+      "AuditLogDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Id of the audit.recorded.v1 event"
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "source": {
+            "type": "string",
+            "example": "fleet",
+            "description": "Producing service"
+          },
+          "actorType": {
+            "type": "string",
+            "enum": [
+              "user",
+              "api_key",
+              "system"
+            ]
+          },
+          "actorId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "orgId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "action": {
+            "type": "string",
+            "example": "vessel.update"
+          },
+          "targetType": {
+            "type": "string",
+            "nullable": true,
+            "example": "vessel"
+          },
+          "targetId": {
+            "type": "string",
+            "nullable": true
+          },
+          "ip": {
+            "type": "string",
+            "nullable": true
+          },
+          "userAgent": {
+            "type": "string",
+            "nullable": true
+          },
+          "meta": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "id",
+          "at",
+          "source",
+          "actorType",
+          "actorId",
+          "orgId",
+          "action",
+          "targetType",
+          "targetId",
+          "ip",
+          "userAgent",
+          "meta"
+        ]
+      },
+      "CursorPageInfoDto": {
+        "type": "object",
+        "properties": {
+          "nextCursor": {
+            "type": "string",
+            "nullable": true,
+            "description": "Opaque cursor of the next page; null on the last page"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          }
+        },
+        "required": [
+          "nextCursor",
+          "limit"
+        ]
+      },
+      "LocalizedTextDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Bahasa Indonesia"
+          },
+          "en": {
+            "type": "string",
+            "description": "English"
+          }
+        },
+        "required": [
+          "id",
+          "en"
+        ]
+      },
+      "MethodReferenceDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "example": "imo-mepc-352-78"
+          },
+          "title": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string",
+            "nullable": true,
+            "format": "uri"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "url"
+        ]
+      },
+      "MethodSummaryDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "example": "cii.attained"
+          },
+          "catalogued": {
+            "type": "boolean",
+            "description": "Whether the catalog shipped with @darmawanweb/ais-its-contracts describes the method"
+          },
+          "domain": {
+            "type": "string",
+            "enum": [
+              "ais",
+              "emission",
+              "seemp",
+              "telemetry",
+              "geo",
+              "safety",
+              "surveillance"
+            ],
+            "nullable": true
+          },
+          "name": {
+            "nullable": true,
+            "type": "object",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/LocalizedTextDto"
+              }
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "implemented",
+              "planned",
+              "deprecated"
+            ],
+            "nullable": true
+          },
+          "needsCitation": {
+            "type": "boolean",
+            "description": "Values come from the thesis without a verified external source"
+          },
+          "references": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MethodReferenceDto"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "catalogued",
+          "domain",
+          "name",
+          "status",
+          "needsCitation",
+          "references"
+        ]
+      },
+      "MethodologyDto": {
+        "type": "object",
+        "properties": {
+          "service": {
+            "type": "string",
+            "example": "auth"
+          },
+          "methods": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MethodSummaryDto"
+            }
+          }
+        },
+        "required": [
+          "service",
+          "methods"
+        ]
+      },
+      "ProblemDetails": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Problem type URI"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "status": {
+            "type": "integer",
+            "minimum": 100,
+            "maximum": 599
+          },
+          "detail": {
+            "type": "string"
+          },
+          "instance": {
+            "description": "Request path",
+            "type": "string"
+          },
+          "code": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*$",
+            "description": "Stable UPPER_SNAKE_CASE error code"
+          },
+          "traceId": {
+            "type": "string"
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "field": {
+                  "type": "string",
+                  "description": "Dot separated path, e.g. \"positions.0.lat\""
+                },
+                "message": {
+                  "type": "string"
+                },
+                "code": {
+                  "description": "Machine readable reason",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "field",
+                "message"
+              ],
+              "additionalProperties": false,
+              "description": "Field-level validation error"
+            }
+          }
+        },
+        "required": [
+          "type",
+          "title",
+          "status",
+          "code"
+        ],
+        "additionalProperties": {},
+        "description": "RFC 9457 problem details"
+      }
+    }
+  },
+  "security": [
+    {
+      "bearer": []
+    }
+  ]
+}

@@ -1,0 +1,280 @@
+import { HTTP_HEADERS } from '@darmawanweb/ais-its-contracts/auth';
+import { PG_POOL, type Pool } from '@darmawanweb/ais-its-nest/db';
+import { createTestJwtIssuer } from '@darmawanweb/ais-its-nest/testing';
+import { createLocalJWKSet, decodeProtectedHeader, jwtVerify } from 'jose';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+
+import { KeyRetirementJob } from '../src/modules/keys/key-retirement.job.js';
+import { SERVICE } from '../src/service.js';
+import {
+  startTestService,
+  TEST_ADMIN,
+  type TestService,
+} from './support/test-service.js';
+
+const METHODOLOGY_URL = `/api/v2/${SERVICE.name}/methodology`;
+
+describe(`${SERVICE.packageName} platform behaviour, bootstrap and signing keys`, () => {
+  let service: TestService;
+
+  beforeAll(async () => {
+    service = await startTestService();
+  });
+
+  afterAll(async () => {
+    await service.close();
+  });
+
+  it('is live and ready with the database, NATS and Valkey up', async () => {
+    const live = await service.app.inject({
+      method: 'GET',
+      url: '/health/live',
+    });
+    expect(live.statusCode).toBe(200);
+
+    const ready = await service.app.inject({
+      method: 'GET',
+      url: '/health/ready',
+    });
+    expect(ready.statusCode).toBe(200);
+    expect(ready.json()).toMatchObject({
+      status: 'ok',
+      details: {
+        database: { status: 'up' },
+        nats: { status: 'up' },
+        redis: { status: 'up' },
+      },
+    });
+  });
+
+  it('applied the migrations, with audit_logs as a compressed hypertable', async () => {
+    const pool = service.app.get<unknown, Pool>(PG_POOL);
+    const migrations = await pool.query<{ name: string }>(
+      'SELECT name FROM schema_migrations ORDER BY version',
+    );
+    expect(migrations.rows.map((row) => row.name)).toContain('init');
+    const hypertable = await pool.query<{ compression_enabled: boolean }>(
+      `SELECT compression_enabled FROM timescaledb_information.hypertables
+       WHERE hypertable_schema = 'auth' AND hypertable_name = 'audit_logs'`,
+    );
+    expect(hypertable.rows).toEqual([{ compression_enabled: true }]);
+    const jobs = await pool.query<{ proc_name: string }>(
+      `SELECT proc_name FROM timescaledb_information.jobs
+       WHERE hypertable_schema = 'auth' AND hypertable_name = 'audit_logs' ORDER BY proc_name`,
+    );
+    expect(jobs.rows.map((row) => row.proc_name)).toEqual([
+      'policy_compression',
+      'policy_retention',
+    ]);
+  });
+
+  it('bootstrapped the platform organization and its super admin', async () => {
+    const admin = await service.loginAdmin();
+    expect(admin.body).toMatchObject({
+      user: {
+        email: TEST_ADMIN.email,
+        isPlatformAdmin: true,
+        status: 'active',
+      },
+      memberships: [
+        {
+          orgName: 'AIS Maritime Intelligence',
+          orgKind: 'platform',
+          role: 'org_admin',
+        },
+      ],
+    });
+    const me = await service.app.inject({
+      method: 'GET',
+      url: '/api/v2/me',
+      headers: admin.headers,
+    });
+    expect(me.json()).toMatchObject({ roles: ['org_admin', 'super_admin'] });
+    expect(me.json<{ permissions: string[] }>().permissions).toContain(
+      'org:manage',
+    );
+  });
+
+  it('denies anonymous requests and tokens of foreign keys with 401 problem details', async () => {
+    const anonymous = await service.app.inject({
+      method: 'GET',
+      url: METHODOLOGY_URL,
+    });
+    expect(anonymous.statusCode).toBe(401);
+    expect(anonymous.headers['content-type']).toContain(
+      'application/problem+json',
+    );
+    expect(anonymous.headers['www-authenticate']).toBeDefined();
+
+    const foreign = await createTestJwtIssuer();
+    const forged = await service.app.inject({
+      method: 'GET',
+      url: '/api/v2/me',
+      headers: {
+        authorization: `Bearer ${await foreign.sign({ roles: ['super_admin'], orgId: null })}`,
+      },
+    });
+    expect(forged.statusCode).toBe(401);
+  });
+
+  it('serves the methodology (no catalog method) to a signed-in user', async () => {
+    const admin = await service.loginAdmin();
+    const response = await service.app.inject({
+      method: 'GET',
+      url: METHODOLOGY_URL,
+      headers: admin.headers,
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ service: SERVICE.name, methods: [] });
+  });
+
+  it('issues access tokens that verify against the served JWKS', async () => {
+    const admin = await service.loginAdmin();
+    const jwks = await service.app.inject({
+      method: 'GET',
+      url: '/.well-known/jwks.json',
+    });
+    expect(jwks.statusCode).toBe(200);
+    expect(jwks.headers['cache-control']).toContain('max-age');
+    const keySet = jwks.json<{
+      keys: {
+        kid: string;
+        kty: string;
+        crv: string;
+        alg: string;
+        d?: string;
+      }[];
+    }>();
+    expect(keySet.keys).toHaveLength(1);
+    expect(keySet.keys[0]).toMatchObject({
+      kty: 'OKP',
+      crv: 'Ed25519',
+      alg: 'EdDSA',
+      use: 'sig',
+    });
+    expect(keySet.keys[0]?.d).toBeUndefined();
+
+    const { payload, protectedHeader } = await jwtVerify(
+      admin.accessToken,
+      createLocalJWKSet(keySet),
+      {
+        issuer: 'ais-its-auth',
+        audience: 'ais-its-api',
+      },
+    );
+    expect(protectedHeader).toMatchObject({
+      alg: 'EdDSA',
+      kid: keySet.keys[0]?.kid,
+    });
+    expect(payload).toMatchObject({
+      typ: 'access',
+      email: TEST_ADMIN.email,
+      roles: ['org_admin', 'super_admin'],
+    });
+    expect(Number(payload.exp) - Number(payload.iat)).toBe(900);
+  });
+
+  it('rotates the signing key: old tokens keep verifying, new ones use the new kid', async () => {
+    const admin = await service.loginAdmin();
+    const before = decodeProtectedHeader(admin.accessToken).kid;
+    const rotation = await service.app.inject({
+      method: 'POST',
+      url: '/api/v2/auth/keys/rotate',
+      headers: admin.headers,
+    });
+    expect(rotation.statusCode).toBe(200);
+    expect(rotation.json()).toMatchObject({ previousKid: before });
+    const newKid = rotation.json<{ kid: string }>().kid;
+
+    const jwks = await service.app.inject({
+      method: 'GET',
+      url: '/.well-known/jwks.json',
+    });
+    expect(
+      jwks
+        .json<{ keys: { kid: string }[] }>()
+        .keys.map((key) => key.kid)
+        .sort(),
+    ).toEqual([before, newKid].sort());
+    const old = await service.app.inject({
+      method: 'GET',
+      url: '/api/v2/me',
+      headers: admin.headers,
+    });
+    expect(old.statusCode).toBe(200);
+    const fresh = await service.loginAdmin();
+    expect(decodeProtectedHeader(fresh.accessToken).kid).toBe(newKid);
+
+    // A retiring key stays published until its grace period elapsed.
+    await service.app.get(KeyRetirementJob).runOnce();
+    const still = await service.app.inject({
+      method: 'GET',
+      url: '/.well-known/jwks.json',
+    });
+    expect(still.json<{ keys: unknown[] }>().keys).toHaveLength(2);
+
+    // Only super admins rotate.
+    const viewer = await service.createUser({ memberships: [] });
+    const session = await service.login(viewer.email, 'CorrectHorse42');
+    const denied = await service.app.inject({
+      method: 'POST',
+      url: '/api/v2/auth/keys/rotate',
+      headers: session.headers,
+    });
+    expect(denied.statusCode).toBe(403);
+  });
+
+  it('answers the gateway forwardAuth with identity headers, or 401', async () => {
+    const admin = await service.loginAdmin();
+    const verified = await service.app.inject({
+      method: 'GET',
+      url: '/api/v2/auth/verify',
+      headers: admin.headers,
+    });
+    expect(verified.statusCode).toBe(200);
+    expect(verified.headers[HTTP_HEADERS.USER_ID.toLowerCase()]).toBe(
+      (admin.body.user as { id: string }).id,
+    );
+    expect(verified.headers[HTTP_HEADERS.ORG_ID.toLowerCase()]).toBe(
+      String(admin.body.activeOrgId),
+    );
+    expect(verified.headers[HTTP_HEADERS.ROLES.toLowerCase()]).toBe(
+      'org_admin,super_admin',
+    );
+    expect(verified.headers['cache-control']).toBe('no-store');
+
+    const missing = await service.app.inject({
+      method: 'GET',
+      url: '/api/v2/auth/verify',
+    });
+    expect(missing.statusCode).toBe(401);
+    const invalid = await service.app.inject({
+      method: 'GET',
+      url: '/api/v2/auth/verify',
+      headers: { authorization: 'Bearer not-a-token' },
+    });
+    expect(invalid.statusCode).toBe(401);
+  });
+
+  it('documents its routes in /openapi.json and exposes metrics', async () => {
+    const response = await service.app.inject({
+      method: 'GET',
+      url: '/openapi.json',
+    });
+    expect(response.statusCode).toBe(200);
+    const document = response.json<{ paths: Record<string, unknown> }>();
+    expect(Object.keys(document.paths)).toEqual(
+      expect.arrayContaining([
+        '/api/v2/auth/login',
+        '/.well-known/jwks.json',
+        '/internal/api-keys/introspect',
+      ]),
+    );
+    const metrics = await service.app.inject({
+      method: 'GET',
+      url: '/metrics',
+    });
+    expect(metrics.body).toContain('aisits_http_requests_total');
+    expect(metrics.body).toContain('aisits_auth_logins_total');
+  });
+});
