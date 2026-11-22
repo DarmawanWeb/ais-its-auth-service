@@ -6,6 +6,11 @@ import {
 import { Injectable } from '@nestjs/common';
 
 import type { CounterMetric } from '../common/metrics.js';
+import {
+  storableNullableText,
+  storableRecord,
+  storableText,
+} from '../domain/storable-text.js';
 import { AuditLogsRepository } from '../modules/audit-logs/audit-logs.repository.js';
 
 /**
@@ -13,7 +18,10 @@ import { AuditLogsRepository } from '../modules/audit-logs/audit-logs.repository
  * `AUDIT` stream, writing every service's `audit.recorded.v1` — this
  * service's own security events included — into the `audit_logs`
  * hypertable. Idempotent: the envelope id is part of the primary key, so a
- * redelivery inserts nothing. Invalid payloads are terminated by the kit.
+ * redelivery inserts nothing. Invalid payloads are terminated by the kit;
+ * valid ones the database could not store (U+0000, lone surrogates,
+ * absurd nesting) are made storable first, so they are not retried in vain
+ * until they reach the DLQ.
  */
 @Injectable()
 export class AuditLogConsumer {
@@ -40,16 +48,16 @@ export class AuditLogConsumer {
     const inserted = await this.logs.insert({
       id: event.id,
       at: new Date(data.at),
-      source: event.source,
+      source: storableText(event.source),
       actorType: data.actorType,
       actorId: data.actorId,
       orgId: data.orgId,
       action: data.action,
-      targetType: data.targetType,
-      targetId: data.targetId,
-      ip: data.ip,
-      userAgent: data.userAgent,
-      meta: data.meta,
+      targetType: storableNullableText(data.targetType),
+      targetId: storableNullableText(data.targetId),
+      ip: storableNullableText(data.ip),
+      userAgent: storableNullableText(data.userAgent),
+      meta: storableRecord(data.meta),
     });
     this.persisted.inc({
       source: event.source.slice(0, 40),

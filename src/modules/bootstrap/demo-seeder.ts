@@ -2,6 +2,7 @@ import type { ApiKeyScope, OrgRole } from '@darmawanweb/ais-its-contracts/auth';
 import { newId } from '@darmawanweb/ais-its-contracts/domain';
 import type { Database } from '@darmawanweb/ais-its-nest/db';
 
+import { DEV_SEED_DEMO_PASSWORD } from '../../config.js';
 import type { Executor, OrganizationRow, UserRow } from '../../db/database.js';
 import type * as schema from '../../db/schema.js';
 import type { OrganizationKind } from '../../domain/access-rules.js';
@@ -11,7 +12,41 @@ import type { MembershipsRepository } from '../accounts/memberships.repository.j
 import type { OrganizationsRepository } from '../accounts/organizations.repository.js';
 import type { UsersRepository } from '../accounts/users.repository.js';
 import type { ApiKeysRepository } from '../api-keys/api-keys.repository.js';
+import type { AuditLogsRepository } from '../audit-logs/audit-logs.repository.js';
 import type { PasswordHasher } from '../crypto/password-hasher.service.js';
+
+/** The settings that decide whether `pnpm seed:demo` may run. */
+export interface DemoSeedSettings {
+  readonly NODE_ENV: string;
+  readonly SEED_DEMO_PASSWORD: string;
+  readonly SEED_DEMO_ALLOW_PRODUCTION: boolean;
+}
+
+/**
+ * Why `pnpm seed:demo` must not run, or `undefined` when it may. The seed
+ * creates a super admin and two live API keys; with the documented default
+ * password that would be a publicly known platform credential, so a
+ * production database needs an explicit opt-in AND a password of its own.
+ */
+export function demoSeedRefusal(
+  settings: DemoSeedSettings,
+): string | undefined {
+  if (settings.NODE_ENV !== 'production') return undefined;
+  if (!settings.SEED_DEMO_ALLOW_PRODUCTION) {
+    return 'Refusing to seed demo accounts with NODE_ENV=production; set SEED_DEMO_ALLOW_PRODUCTION=true (and a SEED_DEMO_PASSWORD of your own) if you really mean it';
+  }
+  if (settings.SEED_DEMO_PASSWORD === DEV_SEED_DEMO_PASSWORD) {
+    return 'Refusing to seed demo accounts in production with the documented default SEED_DEMO_PASSWORD; set a password of your own';
+  }
+  return undefined;
+}
+
+/** Writer of the seed's audit records (the auth service owns `audit_logs`). */
+export interface DemoSeedAudit {
+  readonly repository: AuditLogsRepository;
+  /** `SERVICE_NAME`, the records' `source`. */
+  readonly source: string;
+}
 
 /** Demo organizations (spec §13.1 `pnpm seed:demo`). */
 export const DEMO_ORGANIZATIONS = {
@@ -106,7 +141,10 @@ export interface DemoSeedResult {
  * role (all with the same demo password) and two API keys. Existing
  * organizations (by slug), users (by e-mail, password untouched) and keys
  * (by organization and name) are kept, so it can run against a used
- * database.
+ * database. Everything it creates is audited (`actorType: system`,
+ * `meta.seed: "demo"`): the records are written into `audit_logs` in the
+ * seed transaction — the CLI runs without NATS, and a seeded super admin
+ * must never exist without its trace.
  */
 export class DemoSeeder {
   constructor(
@@ -116,6 +154,7 @@ export class DemoSeeder {
     private readonly memberships: MembershipsRepository,
     private readonly apiKeys: ApiKeysRepository,
     private readonly hasher: PasswordHasher,
+    private readonly audit: DemoSeedAudit,
   ) {}
 
   async run(password: string): Promise<DemoSeedResult> {
@@ -148,6 +187,14 @@ export class DemoSeeder {
             await this.memberships.insert(
               { userId: row.id, orgId: organization.row.id, role: demo.role },
               tx,
+            );
+            await this.record(
+              tx,
+              'membership.create',
+              'user',
+              row.id,
+              organization.row.id,
+              { role: demo.role },
             );
           }
         }
@@ -184,10 +231,19 @@ export class DemoSeeder {
     const demo = DEMO_ORGANIZATIONS[key];
     const existing = await this.organizations.findBySlug(demo.slug, tx);
     if (existing !== undefined) return { row: existing, created: false };
-    return {
-      row: await this.organizations.insert({ id: newId(), ...demo }, tx),
-      created: true,
-    };
+    const row = await this.organizations.insert({ id: newId(), ...demo }, tx);
+    await this.record(
+      tx,
+      'organization.create',
+      'organization',
+      row.id,
+      row.id,
+      {
+        slug: row.slug,
+        kind: row.kind,
+      },
+    );
+    return { row, created: true };
   }
 
   private async user(
@@ -208,6 +264,10 @@ export class DemoSeeder {
       },
       tx,
     );
+    await this.record(tx, 'user.create', 'user', row.id, null, {
+      email: row.email,
+      platformAdmin: row.isPlatformAdmin,
+    });
     return { row, created: true };
   }
 
@@ -222,9 +282,10 @@ export class DemoSeeder {
       return { name: demo.name, scopes: demo.scopes, key: null };
     }
     const material = generateApiKey();
+    const id = newId();
     await this.apiKeys.insert(
       {
-        id: newId(),
+        id,
         orgId,
         name: demo.name,
         prefix: material.prefix,
@@ -234,7 +295,40 @@ export class DemoSeeder {
       },
       tx,
     );
+    await this.record(tx, 'api_key.create', 'api_key', id, orgId, {
+      name: demo.name,
+      prefix: material.prefix,
+      scopes: demo.scopes,
+    });
     return { name: demo.name, scopes: demo.scopes, key: material.key };
+  }
+
+  /** Audits one creation of the seed (system actor, in the seed transaction). */
+  private async record(
+    tx: Executor,
+    action: string,
+    targetType: string,
+    targetId: string,
+    orgId: string | null,
+    meta: Record<string, unknown>,
+  ): Promise<void> {
+    await this.audit.repository.insert(
+      {
+        id: newId(),
+        at: new Date(),
+        source: this.audit.source,
+        actorType: 'system',
+        actorId: null,
+        orgId,
+        action,
+        targetType,
+        targetId,
+        ip: null,
+        userAgent: null,
+        meta: { ...meta, seed: 'demo' },
+      },
+      tx,
+    );
   }
 }
 

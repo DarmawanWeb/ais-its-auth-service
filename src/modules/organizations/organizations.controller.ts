@@ -20,21 +20,24 @@ import {
   Req,
 } from '@nestjs/common';
 import {
+  ApiConflictResponse,
   ApiCreatedResponse,
   ApiNoContentResponse,
   ApiOkResponse,
   ApiOperation,
   ApiTags,
+  ApiUnprocessableEntityResponse,
 } from '@nestjs/swagger';
 import type { FastifyRequest } from 'fastify';
 
 import {
-  AddedMemberDto,
-  AddMemberDto,
   CreateOrganizationDto,
+  InvitationDto,
+  InviteMemberDto,
   ListOrganizationsQuery,
   MemberDto,
   OrganizationDto,
+  SentInvitationDto,
   UpdateMemberDto,
   UpdateOrganizationDto,
 } from './dto/organization.dto.js';
@@ -151,18 +154,23 @@ export class MembersController {
   @Post()
   @RequirePermissions('user:manage')
   @ApiOperation({
-    summary:
-      'Add a member; unknown e-mails become invited accounts and receive an invitation',
+    summary: 'Invite an address to the organization (it joins on acceptance)',
+    description:
+      'Creates an invited account for unknown addresses and e-mails an invitation link (accepted with POST /auth/password/reset). Existing accounts are never attached directly, and the answer is the same for new and existing addresses. Inviting a pending address again renews its link.',
   })
-  @ApiCreatedResponse({ type: AddedMemberDto })
-  async add(
+  @ApiCreatedResponse({ type: SentInvitationDto })
+  @ApiConflictResponse({
+    description: 'MEMBER_ALREADY_EXISTS, INVITATION_CONFLICT (retry)',
+  })
+  @ApiUnprocessableEntityResponse({ description: 'ROLE_NOT_GRANTABLE' })
+  async invite(
     @Param('id', new ParseUUIDPipe()) orgId: string,
-    @Body() body: AddMemberDto,
+    @Body() body: InviteMemberDto,
     @CurrentPrincipal() principal: Principal,
     @Req() request: FastifyRequest,
-  ): Promise<AddedMemberDto> {
-    const added = await this.members.add(orgId, body, principal, request);
-    return new AddedMemberDto(added.record, added.invitationSent);
+  ): Promise<SentInvitationDto> {
+    const sent = await this.members.invite(orgId, body, principal, request);
+    return new SentInvitationDto(sent.record, sent.invitationSent);
   }
 
   @Patch(':userId')
@@ -204,5 +212,50 @@ export class MembersController {
     @Req() request: FastifyRequest,
   ): Promise<void> {
     await this.members.remove(orgId, userId, principal, request);
+  }
+}
+
+/** Pending invitations of an organization: `/api/v2/organizations/:id/invitations` (`user:manage`). */
+@ApiTags('organizations')
+@Controller('organizations/:id/invitations')
+export class InvitationsController {
+  constructor(private readonly members: MembersService) {}
+
+  @Get()
+  @RequirePermissions('user:manage')
+  @ApiOperation({
+    summary: 'List the pending invitations of an organization, newest first',
+  })
+  @ApiPageResponse(InvitationDto)
+  async list(
+    @Param('id', new ParseUUIDPipe()) orgId: string,
+    @Query() query: PageQueryDto,
+    @CurrentPrincipal() principal: Principal,
+  ): Promise<Paginated<InvitationDto>> {
+    const result = await this.members.listInvitations(orgId, query, principal);
+    const now = new Date();
+    return {
+      data: result.data.map((record) => new InvitationDto(record, now)),
+      meta: result.meta,
+    };
+  }
+
+  @Delete(':invitationId')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @RequirePermissions('user:manage')
+  @ApiOperation({ summary: 'Withdraw an invitation (its link stops working)' })
+  @ApiNoContentResponse()
+  async cancel(
+    @Param('id', new ParseUUIDPipe()) orgId: string,
+    @Param('invitationId', new ParseUUIDPipe()) invitationId: string,
+    @CurrentPrincipal() principal: Principal,
+    @Req() request: FastifyRequest,
+  ): Promise<void> {
+    await this.members.cancelInvitation(
+      orgId,
+      invitationId,
+      principal,
+      request,
+    );
   }
 }

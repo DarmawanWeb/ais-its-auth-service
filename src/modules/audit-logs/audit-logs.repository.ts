@@ -3,7 +3,7 @@ import { type Database, InjectDb } from '@darmawanweb/ais-its-nest/db';
 import { Injectable } from '@nestjs/common';
 import { and, desc, eq, gte, lt, type SQL, sql } from 'drizzle-orm';
 
-import type { AuditLogRow } from '../../db/database.js';
+import type { AuditLogRow, Executor } from '../../db/database.js';
 import * as schema from '../../db/schema.js';
 
 const { auditLogs } = schema;
@@ -49,9 +49,16 @@ export interface AuditLogCursor {
 export class AuditLogsRepository {
   constructor(@InjectDb() private readonly db: Database<typeof schema>) {}
 
-  /** Inserts a record once; `false` for a redelivered envelope (`ON CONFLICT DO NOTHING`). */
-  async insert(entry: NewAuditLog): Promise<boolean> {
-    const rows = await this.db
+  /**
+   * Inserts a record once; `false` for a redelivered envelope (`ON CONFLICT
+   * DO NOTHING`). `executor` lets the demo seeder write its records in the
+   * seed transaction.
+   */
+  async insert(
+    entry: NewAuditLog,
+    executor: Executor = this.db,
+  ): Promise<boolean> {
+    const rows = await executor
       .insert(auditLogs)
       .values(entry)
       .onConflictDoNothing({ target: [auditLogs.at, auditLogs.id] })

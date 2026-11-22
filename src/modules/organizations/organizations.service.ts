@@ -24,6 +24,7 @@ import {
   rolesStrandedByKind,
 } from '../../domain/access-rules.js';
 import { slugify } from '../../domain/identity.js';
+import { InvitationsRepository } from '../accounts/invitations.repository.js';
 import { MembershipsRepository } from '../accounts/memberships.repository.js';
 import {
   ORGANIZATION_SLUG_CONSTRAINT,
@@ -51,6 +52,7 @@ export class OrganizationsService {
     @InjectDb() private readonly db: Database<typeof schema>,
     private readonly organizations: OrganizationsRepository,
     private readonly memberships: MembershipsRepository,
+    private readonly invitations: InvitationsRepository,
     private readonly sessions: SessionsRepository,
     private readonly audit: AuditService,
   ) {}
@@ -143,10 +145,11 @@ export class OrganizationsService {
         }
         if (fields.length === 0) return { row: current, changed: false };
         if (kind !== undefined && kind !== current.kind) {
-          const stranded = rolesStrandedByKind(
-            kind,
-            await this.memberships.rolesInUse(id, tx),
-          );
+          // Pending invitations count: every invitation stays acceptable.
+          const stranded = rolesStrandedByKind(kind, [
+            ...(await this.memberships.rolesInUse(id, tx)),
+            ...(await this.invitations.rolesInUse(id, tx)),
+          ]);
           if (stranded.length > 0)
             throw AuthErrors.kindStrandsRoles(kind, stranded);
         }

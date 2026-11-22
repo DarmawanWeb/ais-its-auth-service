@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 
 import { PeriodicTask } from '../../common/periodic-task.js';
+import { InvitationsRepository } from '../accounts/invitations.repository.js';
 import { SessionsRepository } from '../accounts/sessions.repository.js';
 import { ResetTokensRepository } from '../passwords/reset-tokens.repository.js';
 
@@ -16,8 +17,8 @@ export const HOUSEKEEPING_INTERVAL_MS = 60 * 60_000;
 export const ENDED_RECORDS_RETENTION_MS = 30 * 86_400_000;
 
 /**
- * Hourly cleanup: refresh tokens and sessions that ended, and reset or
- * invitation tokens that expired, more than {@link ENDED_RECORDS_RETENTION_MS}
+ * Hourly cleanup: refresh tokens and sessions that ended, and reset tokens
+ * and invitations that expired, more than {@link ENDED_RECORDS_RETENTION_MS}
  * ago (the audit log keeps the history).
  */
 @Injectable()
@@ -30,6 +31,7 @@ export class HousekeepingJob
   constructor(
     private readonly sessions: SessionsRepository,
     private readonly resetTokens: ResetTokensRepository,
+    private readonly invitations: InvitationsRepository,
   ) {
     this.task = new PeriodicTask(
       'Housekeeping',
@@ -52,9 +54,10 @@ export class HousekeepingJob
     const before = new Date(now.getTime() - ENDED_RECORDS_RETENTION_MS);
     const { tokens, sessions } = await this.sessions.prune(before);
     const resetTokens = await this.resetTokens.prune(before);
-    if (tokens + sessions + resetTokens > 0) {
+    const invitations = await this.invitations.prune(before);
+    if (tokens + sessions + resetTokens + invitations > 0) {
       this.logger.log(
-        `Removed ${tokens} refresh tokens, ${sessions} sessions and ${resetTokens} reset tokens ended before ${before.toISOString()}`,
+        `Removed ${tokens} refresh tokens, ${sessions} sessions, ${resetTokens} reset tokens and ${invitations} invitations ended before ${before.toISOString()}`,
       );
     }
   }

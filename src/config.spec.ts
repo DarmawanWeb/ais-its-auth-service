@@ -49,4 +49,30 @@ describe('configSchema', () => {
       }),
     ).toThrow(ConfigValidationError);
   });
+
+  it('accepts a previous key secret for rotations, but not the current one again', () => {
+    const current = 'current-key-encryption-secret-0123456789';
+    expect(
+      load({
+        KEY_ENCRYPTION_SECRET: current,
+        KEY_ENCRYPTION_SECRET_PREVIOUS: 'previous-key-encryption-secret-012345',
+      }),
+    ).toMatchObject({
+      KEY_ENCRYPTION_SECRET_PREVIOUS: 'previous-key-encryption-secret-012345',
+    });
+    expect(load().KEY_ENCRYPTION_SECRET_PREVIOUS).toBeUndefined();
+    expect(() =>
+      load({
+        KEY_ENCRYPTION_SECRET: current,
+        KEY_ENCRYPTION_SECRET_PREVIOUS: current,
+      }),
+    ).toThrow(ConfigValidationError);
+  });
+
+  it('keeps the demo seed out of production unless explicitly allowed', () => {
+    expect(load().SEED_DEMO_ALLOW_PRODUCTION).toBe(false);
+    expect(
+      load({ SEED_DEMO_ALLOW_PRODUCTION: 'true' }).SEED_DEMO_ALLOW_PRODUCTION,
+    ).toBe(true);
+  });
 });

@@ -18,6 +18,8 @@ export type SessionRow = typeof schema.sessions.$inferSelect;
 export type RefreshTokenRow = typeof schema.refreshTokens.$inferSelect;
 export type PasswordResetTokenRow =
   typeof schema.passwordResetTokens.$inferSelect;
+export type MembershipInvitationRow =
+  typeof schema.membershipInvitations.$inferSelect;
 export type ApiKeyRow = typeof schema.apiKeys.$inferSelect;
 export type SigningKeyRow = typeof schema.signingKeys.$inferSelect;
 export type AuditLogRow = typeof schema.auditLogs.$inferSelect;

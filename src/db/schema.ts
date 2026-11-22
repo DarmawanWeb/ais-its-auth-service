@@ -156,6 +156,49 @@ export const passwordResetTokens = serviceSchema.table(
   ],
 );
 
+/**
+ * Pending invitations to join an organization (`0002_membership_invitations.sql`);
+ * the membership is written when the invitee accepts.
+ */
+export const membershipInvitations = serviceSchema.table(
+  'membership_invitations',
+  {
+    id: pg.uuid('id').primaryKey(),
+    orgId: pg
+      .uuid('org_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'cascade' }),
+    userId: pg
+      .uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    role: pg
+      .text('role', {
+        enum: ['org_admin', 'fleet_manager', 'authority', 'viewer'],
+      })
+      .notNull(),
+    name: pg.text('name').notNull(),
+    invitedBy: pg
+      .uuid('invited_by')
+      .references(() => users.id, { onDelete: 'set null' }),
+    tokenHash: pg.text('token_hash').notNull(),
+    expiresAt: timestamp('expires_at').notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    pg.unique('membership_invitations_token_hash_key').on(table.tokenHash),
+    pg
+      .unique('membership_invitations_org_user_key')
+      .on(table.orgId, table.userId),
+    pg
+      .index('membership_invitations_org_created_idx')
+      .on(table.orgId, table.createdAt.desc(), table.id.desc()),
+    pg.index('membership_invitations_user_idx').on(table.userId),
+    pg.index('membership_invitations_expires_idx').on(table.expiresAt),
+  ],
+);
+
 /** API keys of machine clients (prefix `sk_<id>`, SHA-256 hex of the key). */
 export const apiKeys = serviceSchema.table(
   'api_keys',

@@ -7,7 +7,7 @@ import { InjectRedis, type Redis } from '@darmawanweb/ais-its-nest/redis';
 import { Injectable } from '@nestjs/common';
 
 import { AuthErrors } from '../../common/errors.js';
-import { requireUser } from '../../common/principals.js';
+import { clientInfo, requireUser } from '../../common/principals.js';
 import type { UserRow } from '../../db/database.js';
 import {
   generateTotpSecret,
@@ -69,7 +69,7 @@ export class MfaService {
     const user = await this.currentUser(principal);
     if (user.mfaEnabled) throw AuthErrors.mfaAlreadyEnabled();
     if (user.mfaSecretEnc === null) throw AuthErrors.mfaSetupRequired();
-    await this.throttle.guardMfa(user.id, request.ip ?? null, () =>
+    await this.throttle.guardMfa(user.id, clientInfo(request).ip, () =>
       this.checkCode(user, code),
     );
     await this.users.setMfa(user.id, {
@@ -91,7 +91,7 @@ export class MfaService {
   ): Promise<void> {
     const user = await this.currentUser(principal);
     if (!user.mfaEnabled) throw AuthErrors.mfaNotEnabled();
-    await this.throttle.guardMfa(user.id, request.ip ?? null, () =>
+    await this.throttle.guardMfa(user.id, clientInfo(request).ip, () =>
       this.checkCode(user, code),
     );
     await this.users.setMfa(user.id, { secretEnc: null, enabled: false });

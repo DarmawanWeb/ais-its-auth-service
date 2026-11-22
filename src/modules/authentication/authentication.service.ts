@@ -101,10 +101,11 @@ export class AuthenticationService {
       user.passwordHash !== null &&
       this.hasher.needsRehash(user.passwordHash)
     ) {
-      await this.users.setPassword(
+      // Compare-and-set: a password change committed meanwhile wins.
+      await this.users.rehashPassword(
         user.id,
+        user.passwordHash,
         await this.hasher.hash(password),
-        undefined,
       );
     }
     if (user.mfaEnabled) {

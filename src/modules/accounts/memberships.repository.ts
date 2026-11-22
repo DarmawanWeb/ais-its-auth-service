@@ -100,6 +100,28 @@ export class MembershipsRepository {
     return row;
   }
 
+  /**
+   * Creates a membership unless one exists (invitation acceptance stays
+   * idempotent); `undefined` when the user already was a member.
+   */
+  async insertIfAbsent(
+    membership: {
+      readonly userId: string;
+      readonly orgId: string;
+      readonly role: OrgRole;
+    },
+    tx: Executor,
+  ): Promise<MembershipRow | undefined> {
+    const [row] = await tx
+      .insert(memberships)
+      .values(membership)
+      .onConflictDoNothing({
+        target: [memberships.userId, memberships.orgId],
+      })
+      .returning();
+    return row;
+  }
+
   async updateRole(
     userId: string,
     orgId: string,

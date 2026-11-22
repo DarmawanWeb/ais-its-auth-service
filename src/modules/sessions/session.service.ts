@@ -138,7 +138,8 @@ export class SessionService {
   }
 
   /**
-   * Rotates a refresh token.
+   * Rotates a refresh token. The rotation and the new access token are one
+   * unit: nothing commits unless the access token could be signed.
    *
    * @throws {UnauthorizedError} `INVALID_REFRESH_TOKEN` (unknown, expired,
    *   revoked) or `REFRESH_TOKEN_REUSED` (family revoked).
@@ -152,9 +153,25 @@ export class SessionService {
       this.refreshes.inc({ outcome: 'missing' });
       throw AuthErrors.invalidRefreshToken();
     }
-    const outcome = await this.db.transaction((tx) =>
-      this.rotateLocked(sha256Hex(presented), tx),
-    );
+    const outcome = await this.db.transaction(async (tx) => {
+      const rotation = await this.rotateLocked(sha256Hex(presented), tx);
+      if (rotation.kind !== 'rotated') return rotation;
+      // Signed before the rotation commits: when signing fails (no signing
+      // key loaded, 503) the rotation rolls back and the presented token
+      // stays valid, so the client's retry is not mistaken for a reuse.
+      const access = await this.tokens.issueAccessToken({
+        userId: rotation.user.id,
+        sessionId: rotation.session.id,
+        orgId: rotation.session.orgId,
+        roles: accessRoles(
+          rotation.role?.role ?? null,
+          rotation.user.isPlatformAdmin,
+        ),
+        email: rotation.user.email,
+        name: rotation.user.name,
+      });
+      return { ...rotation, access };
+    });
     if (outcome.kind === 'unknown') {
       this.refreshes.inc({ outcome: 'unknown' });
       throw AuthErrors.invalidRefreshToken();
@@ -164,18 +181,7 @@ export class SessionService {
       return this.refuse(outcome, request);
     }
     this.refreshes.inc({ outcome: 'rotated' });
-    const access = await this.tokens.issueAccessToken({
-      userId: outcome.user.id,
-      sessionId: outcome.session.id,
-      orgId: outcome.session.orgId,
-      roles: accessRoles(
-        outcome.role?.role ?? null,
-        outcome.user.isPlatformAdmin,
-      ),
-      email: outcome.user.email,
-      name: outcome.user.name,
-    });
-    return { access, refresh: outcome.refresh };
+    return { access: outcome.access, refresh: outcome.refresh };
   }
 
   /**

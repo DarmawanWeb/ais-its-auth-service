@@ -32,6 +32,8 @@ export const THROTTLE_LIMITS = Object.freeze({
   forgotPerIp: { limit: 10, windowMs: 15 * MINUTE_MS },
   /** Reset e-mails per address (silently skipped beyond: the answer is always 202). */
   forgotPerEmail: { limit: 3, windowMs: 60 * MINUTE_MS },
+  /** Failed password resets and invitation acceptances (bad links) per client IP. */
+  resetPerIp: { limit: 10, windowMs: 15 * MINUTE_MS },
 });
 
 const THROTTLED_DETAIL = 'Too many failed attempts; try again later';
@@ -50,6 +52,7 @@ export class AuthThrottle {
   private readonly passwordUser: FixedWindowRateLimiter;
   private readonly forgotIp: FixedWindowRateLimiter;
   private readonly forgotEmail: SlidingWindowRateLimiter;
+  private readonly resetIp: FixedWindowRateLimiter;
 
   constructor(@InjectRedis() redis: Redis) {
     this.loginEmail = new FixedWindowRateLimiter(redis, {
@@ -75,6 +78,10 @@ export class AuthThrottle {
     this.forgotEmail = new SlidingWindowRateLimiter(redis, {
       name: 'forgot-email',
       ...THROTTLE_LIMITS.forgotPerEmail,
+    });
+    this.resetIp = new FixedWindowRateLimiter(redis, {
+      name: 'reset-ip',
+      ...THROTTLE_LIMITS.resetPerIp,
     });
   }
 
@@ -142,6 +149,19 @@ export class AuthThrottle {
         detail: 'Too many password reset requests; try again later',
       });
     }
+  }
+
+  /**
+   * Runs a password reset or invitation acceptance under the per-IP limit
+   * of failed attempts (unknown, used or expired links, disabled accounts);
+   * successful attempts are refunded.
+   *
+   * @throws {RateLimitedError} `429 RATE_LIMITED` (with `Retry-After`) when exhausted.
+   */
+  guardReset<T>(ip: string | null, attempt: () => Promise<T>): Promise<T> {
+    return guardAttempt(this.resetIp, ipKey(ip), attempt, {
+      detail: 'Too many invalid or expired links; try again later',
+    });
   }
 
   /** `true` when another reset e-mail may be sent to this address now. */

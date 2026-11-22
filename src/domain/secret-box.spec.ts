@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   deriveKey,
   openSecret,
+  resealSecret,
   SecretDecryptionError,
   sealSecret,
 } from './secret-box.js';
@@ -65,5 +66,42 @@ describe('secret box (AES-256-GCM, HKDF-SHA256 keys)', () => {
     expect(() => sealSecret(key, 'x', 'y', Buffer.alloc(16))).toThrow(
       RangeError,
     );
+  });
+});
+
+describe('resealSecret (rotation of KEY_ENCRYPTION_SECRET)', () => {
+  const previous = deriveKey(SECRET, 'mfa-secret');
+  const current = deriveKey(`${SECRET}-rotated`, 'mfa-secret');
+
+  it('re-seals a value of the previous key under the current key, keeping its binding', () => {
+    const old = sealSecret(previous, 'JBSWY3DPEHPK3PXP', 'user-1');
+    const resealed = resealSecret(current, previous, old, 'user-1');
+    expect(resealed).toBeDefined();
+    expect(openSecret(current, String(resealed), 'user-1')).toBe(
+      'JBSWY3DPEHPK3PXP',
+    );
+    expect(() => openSecret(previous, String(resealed), 'user-1')).toThrow(
+      SecretDecryptionError,
+    );
+    expect(() => openSecret(current, String(resealed), 'user-2')).toThrow(
+      SecretDecryptionError,
+    );
+  });
+
+  it('is idempotent and refuses values neither key opens', () => {
+    const fresh = sealSecret(current, 'secret', 'user-1');
+    expect(resealSecret(current, previous, fresh, 'user-1')).toBeUndefined();
+    const foreign = sealSecret(
+      deriveKey('another-secret-of-at-least-32-chars', 'mfa-secret'),
+      'secret',
+      'user-1',
+    );
+    expect(() => resealSecret(current, previous, foreign, 'user-1')).toThrow(
+      SecretDecryptionError,
+    );
+    const wrongRecord = sealSecret(previous, 'secret', 'user-1');
+    expect(() =>
+      resealSecret(current, previous, wrongRecord, 'user-2'),
+    ).toThrow(SecretDecryptionError);
   });
 });

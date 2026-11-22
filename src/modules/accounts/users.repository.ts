@@ -1,12 +1,25 @@
 import { type Database, InjectDb } from '@darmawanweb/ais-its-nest/db';
 import { Injectable } from '@nestjs/common';
-import { and, count, desc, eq, ilike, or, type SQL, sql } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  count,
+  desc,
+  eq,
+  ilike,
+  isNotNull,
+  ne,
+  or,
+  type SQL,
+  sql,
+} from 'drizzle-orm';
 
 import {
   escapeLikePattern,
   type Executor,
   type UserRow,
 } from '../../db/database.js';
+import { withoutQueryValues } from '../../db/errors.js';
 import * as schema from '../../db/schema.js';
 
 const { users } = schema;
@@ -34,7 +47,12 @@ export interface UserFilter {
 /** Name of the unique index on `lower(email)` (`0001_init.sql`). */
 export const USER_EMAIL_CONSTRAINT = 'users_email_key';
 
-/** Drizzle access to `users`. E-mails are stored normalized (lowercase). */
+/**
+ * Drizzle access to `users`. E-mails are stored normalized (lowercase).
+ * Every write goes through `withoutQueryValues`: a failed query must not
+ * put the argon2id hash or the sealed MFA secret it binds (or a row the
+ * driver echoes in its `detail`) into logs or error responses.
+ */
 @Injectable()
 export class UsersRepository {
   constructor(@InjectDb() private readonly db: Database<typeof schema>) {}
@@ -47,6 +65,21 @@ export class UsersRepository {
       .select()
       .from(users)
       .where(eq(users.id, id))
+      .limit(1);
+    return row;
+  }
+
+  /**
+   * Reads a user and locks the row until the end of the transaction
+   * (`FOR UPDATE`): status checks followed by writes (reset, invitation
+   * acceptance, enabling/disabling) serialize instead of losing updates.
+   */
+  async lockById(id: string, tx: Executor): Promise<UserRow | undefined> {
+    const [row] = await tx
+      .select()
+      .from(users)
+      .where(eq(users.id, id))
+      .for('update')
       .limit(1);
     return row;
   }
@@ -66,7 +99,9 @@ export class UsersRepository {
 
   /** Inserts a user; a taken e-mail violates {@link USER_EMAIL_CONSTRAINT}. */
   async insert(user: NewUser, executor: Executor = this.db): Promise<UserRow> {
-    const [row] = await executor.insert(users).values(user).returning();
+    const [row] = await withoutQueryValues('Creating the user', () =>
+      executor.insert(users).values(user).returning(),
+    );
     if (row === undefined)
       throw new Error('INSERT … RETURNING returned no row');
     return row;
@@ -97,21 +132,51 @@ export class UsersRepository {
     return { rows, total: totals[0]?.total ?? 0 };
   }
 
-  /** Sets the password (and optionally the status, e.g. invited → active). */
+  /**
+   * Sets the password (and optionally the status, e.g. invited → active) of
+   * an account that is not disabled. The condition is part of the `UPDATE`,
+   * so a disable that commits first is never overwritten.
+   *
+   * @returns `false` when no such account (or it is disabled).
+   */
   async setPassword(
     id: string,
     passwordHash: string,
     status: UserStatus | undefined,
     executor: Executor = this.db,
-  ): Promise<void> {
-    await executor
-      .update(users)
-      .set({
-        passwordHash,
-        ...(status === undefined ? {} : { status }),
-        updatedAt: sql`now()`,
-      })
-      .where(eq(users.id, id));
+  ): Promise<boolean> {
+    const rows = await withoutQueryValues('Storing the password', () =>
+      executor
+        .update(users)
+        .set({
+          passwordHash,
+          ...(status === undefined ? {} : { status }),
+          updatedAt: sql`now()`,
+        })
+        .where(and(eq(users.id, id), ne(users.status, 'disabled')))
+        .returning({ id: users.id }),
+    );
+    return rows.length > 0;
+  }
+
+  /**
+   * Replaces a hash with a stronger one of the same password (argon2
+   * parameters changed), only if it is still `expectedHash`: a concurrent
+   * password change wins over the rehash of a sign-in with the old password.
+   */
+  async rehashPassword(
+    id: string,
+    expectedHash: string,
+    passwordHash: string,
+  ): Promise<boolean> {
+    const rows = await withoutQueryValues('Rehashing the password', () =>
+      this.db
+        .update(users)
+        .set({ passwordHash, updatedAt: sql`now()` })
+        .where(and(eq(users.id, id), eq(users.passwordHash, expectedHash)))
+        .returning({ id: users.id }),
+    );
+    return rows.length > 0;
   }
 
   /** Changes the status; `undefined` when no user matched. */
@@ -120,30 +185,36 @@ export class UsersRepository {
     status: UserStatus,
     executor: Executor = this.db,
   ): Promise<UserRow | undefined> {
-    const [row] = await executor
-      .update(users)
-      .set({ status, updatedAt: sql`now()` })
-      .where(eq(users.id, id))
-      .returning();
+    const [row] = await withoutQueryValues('Changing the status', () =>
+      executor
+        .update(users)
+        .set({ status, updatedAt: sql`now()` })
+        .where(eq(users.id, id))
+        .returning(),
+    );
     return row;
   }
 
   /** Changes the display name; `undefined` when no user matched. */
   async setName(id: string, name: string): Promise<UserRow | undefined> {
-    const [row] = await this.db
-      .update(users)
-      .set({ name, updatedAt: sql`now()` })
-      .where(eq(users.id, id))
-      .returning();
+    const [row] = await withoutQueryValues('Renaming the user', () =>
+      this.db
+        .update(users)
+        .set({ name, updatedAt: sql`now()` })
+        .where(eq(users.id, id))
+        .returning(),
+    );
     return row;
   }
 
   /** Records a successful sign-in. */
   async recordLogin(id: string): Promise<void> {
-    await this.db
-      .update(users)
-      .set({ lastLoginAt: sql`now()` })
-      .where(eq(users.id, id));
+    await withoutQueryValues('Recording the sign-in', () =>
+      this.db
+        .update(users)
+        .set({ lastLoginAt: sql`now()` })
+        .where(eq(users.id, id)),
+    );
   }
 
   /**
@@ -154,14 +225,47 @@ export class UsersRepository {
     id: string,
     mfa: { readonly secretEnc: string | null; readonly enabled: boolean },
   ): Promise<void> {
-    await this.db
-      .update(users)
-      .set({
-        mfaSecretEnc: mfa.secretEnc,
-        mfaEnabled: mfa.enabled,
-        updatedAt: sql`now()`,
-      })
-      .where(eq(users.id, id));
+    await withoutQueryValues('Storing the MFA secret', () =>
+      this.db
+        .update(users)
+        .set({
+          mfaSecretEnc: mfa.secretEnc,
+          mfaEnabled: mfa.enabled,
+          updatedAt: sql`now()`,
+        })
+        .where(eq(users.id, id)),
+    );
+  }
+
+  /** Every sealed MFA secret (pending or enabled), locked for a re-seal (`pnpm rotate:key-secret`). */
+  async lockSealedMfaSecrets(
+    tx: Executor,
+  ): Promise<{ id: string; mfaSecretEnc: string }[]> {
+    const rows = await tx
+      .select({ id: users.id, mfaSecretEnc: users.mfaSecretEnc })
+      .from(users)
+      .where(isNotNull(users.mfaSecretEnc))
+      .orderBy(asc(users.id))
+      .for('update');
+    return rows.flatMap((row) =>
+      row.mfaSecretEnc === null
+        ? []
+        : [{ id: row.id, mfaSecretEnc: row.mfaSecretEnc }],
+    );
+  }
+
+  /** Stores a re-sealed MFA secret (the enabled flag is untouched). */
+  async replaceMfaSecret(
+    id: string,
+    mfaSecretEnc: string,
+    tx: Executor,
+  ): Promise<void> {
+    await withoutQueryValues('Storing the MFA secret', () =>
+      tx
+        .update(users)
+        .set({ mfaSecretEnc, updatedAt: sql`now()` })
+        .where(eq(users.id, id)),
+    );
   }
 }
 

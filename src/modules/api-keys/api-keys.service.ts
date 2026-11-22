@@ -24,7 +24,10 @@ import { AuthErrors } from '../../common/errors.js';
 import type { CounterMetric } from '../../common/metrics.js';
 import { requireUser } from '../../common/principals.js';
 import type { ApiKeyRow } from '../../db/database.js';
-import { canManageApiKeys } from '../../domain/access-rules.js';
+import {
+  canManageApiKeys,
+  ungrantableScopes,
+} from '../../domain/access-rules.js';
 import {
   apiKeyMatches,
   generateApiKey,
@@ -51,7 +54,8 @@ export interface CreatedApiKey {
 
 /**
  * API keys of machine clients (spec §8.1, §13.1): managed by `org_admin`s
- * of the key's organization and by super admins (`api_key:manage`);
+ * of the key's organization and by super admins (`api_key:manage`); the
+ * platform-wide write scope `ais:ingest` is granted by super admins only;
  * stored as SHA-256 with a unique lookup prefix; introspected by the other
  * services (`/internal/api-keys/introspect`).
  */
@@ -89,13 +93,20 @@ export class ApiKeysService {
     return toPaginated(rows, page, total);
   }
 
-  /** Creates a key; the secret is returned once and never stored. */
+  /**
+   * Creates a key; the secret is returned once and never stored.
+   *
+   * @throws {ForbiddenError} `403 SCOPE_NOT_GRANTABLE` for scopes the caller
+   *   may not grant (`ais:ingest` outside super admins, see `grantableScopes`).
+   */
   async create(
     principal: Principal,
     input: CreateApiKeyInput,
     request: AuditRequest,
   ): Promise<CreatedApiKey> {
     const actor = requireUser(principal);
+    const refused = ungrantableScopes(actor, input.scopes);
+    if (refused.length > 0) throw AuthErrors.scopeNotGrantable(refused);
     const orgId = this.targetOrg(principal, input.orgId);
     if ((await this.organizations.findById(orgId)) === undefined)
       throw AuthErrors.organizationNotFound(orgId);

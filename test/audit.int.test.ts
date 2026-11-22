@@ -5,9 +5,22 @@ import {
   subjectForEvent,
 } from '@darmawanweb/ais-its-contracts/events';
 import { newId } from '@darmawanweb/ais-its-contracts/domain';
+import { type Database, DRIZZLE_DB } from '@darmawanweb/ais-its-nest/db';
 import { NatsClient } from '@darmawanweb/ais-its-nest/nats';
 import { waitFor } from '@darmawanweb/ais-its-nest/testing';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+
+import type * as schema from '../src/db/schema.js';
+import { MembershipsRepository } from '../src/modules/accounts/memberships.repository.js';
+import { OrganizationsRepository } from '../src/modules/accounts/organizations.repository.js';
+import { UsersRepository } from '../src/modules/accounts/users.repository.js';
+import { ApiKeysRepository } from '../src/modules/api-keys/api-keys.repository.js';
+import { AuditLogsRepository } from '../src/modules/audit-logs/audit-logs.repository.js';
+import {
+  DEMO_USERS,
+  DemoSeeder,
+} from '../src/modules/bootstrap/demo-seeder.js';
+import { PasswordHasher } from '../src/modules/crypto/password-hasher.service.js';
 
 import {
   type Session,
@@ -114,6 +127,79 @@ describe('central audit log (consumer auth-audit, GET /audit-logs)', () => {
     expect((await auditLogs(admin, `?orgId=${org.id}`)).body.data).toHaveLength(
       1,
     );
+  });
+
+  it('stores records whose text PostgreSQL would refuse (NUL, lone surrogates) instead of retrying them', async () => {
+    const org = await service.createOrganization();
+    const envelope = makeEnvelope({
+      type: EVENT_TYPES.AUDIT_RECORDED,
+      source: 'fleet',
+      data: {
+        actorType: 'system',
+        actorId: null,
+        orgId: org.id,
+        action: 'vessel.import',
+        targetType: 'vessel',
+        targetId: 'row\u0000 7',
+        ip: null,
+        userAgent: 'importer\u0000',
+        meta: { 'file\u0000name': 'kapal\u0000.csv', bad: '\uD800', n: 3 },
+        at: new Date().toISOString(),
+      },
+    });
+    await app()
+      .get(NatsClient)
+      .jetstream.publish(subjectForEvent(envelope), encodeEnvelope(envelope), {
+        msgID: envelope.id,
+      });
+    const found = await waitFor(async () => {
+      const { body } = await auditLogs(
+        admin,
+        `?orgId=${org.id}&action=vessel.import`,
+      );
+      return body.data.length > 0 ? body : undefined;
+    });
+    expect(found.data[0]).toMatchObject({
+      id: envelope.id,
+      meta: { 'file\uFFFDname': 'kapal\uFFFD.csv', bad: '\uFFFD', n: 3 },
+    });
+  });
+
+  it('audits everything pnpm seed:demo creates, in the seed transaction', async () => {
+    const db = service.app.get<unknown, Database<typeof schema>>(DRIZZLE_DB);
+    const seeder = new DemoSeeder(
+      db,
+      new OrganizationsRepository(db),
+      new UsersRepository(db),
+      new MembershipsRepository(db),
+      new ApiKeysRepository(db),
+      new PasswordHasher(),
+      { repository: new AuditLogsRepository(db), source: 'auth' },
+    );
+    const result = await seeder.run('SeedSecret2026');
+    expect(result.apiKeys.every((key) => key.key !== null)).toBe(true);
+    const seeded = await auditLogs(admin, '?limit=200');
+    const actions = seeded.body.data
+      .filter((record) => record.meta.seed === 'demo')
+      .map((record) => record.action);
+    expect(actions.filter((action) => action === 'user.create')).toHaveLength(
+      DEMO_USERS.length,
+    );
+    expect(
+      actions.filter((action) => action === 'organization.create'),
+    ).toHaveLength(2);
+    expect(
+      actions.filter((action) => action === 'api_key.create'),
+    ).toHaveLength(2);
+    expect(
+      actions.filter((action) => action === 'membership.create'),
+    ).toHaveLength(DEMO_USERS.length - 1);
+    // A second run creates nothing and audits nothing more.
+    await seeder.run('SeedSecret2026');
+    const again = await auditLogs(admin, '?limit=200');
+    expect(
+      again.body.data.filter((record) => record.meta.seed === 'demo'),
+    ).toHaveLength(actions.length);
   });
 
   it('records this service’s own security events through the same pipeline', async () => {

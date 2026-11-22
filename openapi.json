@@ -179,6 +179,7 @@
     },
     "/api/v2/auth/refresh": {
       "post": {
+        "description": "Reads the refresh token from the HttpOnly cookie aisits_rt (Path=/api/v2/auth, SameSite=Strict; set by login, MFA verify and refresh). Browsers send it automatically; an Origin header, when present, must be one of CORS_ORIGINS or PUBLIC_BASE_URL.",
         "operationId": "AuthController_refresh",
         "parameters": [],
         "responses": {
@@ -210,9 +211,6 @@
           }
         },
         "security": [
-          {
-            "aisits_rt": []
-          },
           {}
         ],
         "summary": "Rotate the refresh cookie and get a new access token",
@@ -223,6 +221,7 @@
     },
     "/api/v2/auth/logout": {
       "post": {
+        "description": "Reads the refresh token from the HttpOnly cookie aisits_rt (Path=/api/v2/auth, SameSite=Strict; set by login, MFA verify and refresh). Browsers send it automatically; an Origin header, when present, must be one of CORS_ORIGINS or PUBLIC_BASE_URL.",
         "operationId": "AuthController_logout",
         "parameters": [],
         "responses": {
@@ -241,9 +240,6 @@
           }
         },
         "security": [
-          {
-            "aisits_rt": []
-          },
           {}
         ],
         "summary": "Sign out: revoke the session of the refresh cookie and clear it",
@@ -577,6 +573,7 @@
     },
     "/api/v2/auth/password/reset": {
       "post": {
+        "description": "An invitation token also writes the membership of the invitation (and activates a new account). Failed attempts are throttled per client IP.",
         "operationId": "PasswordsController_reset",
         "parameters": [],
         "requestBody": {
@@ -592,6 +589,18 @@
         "responses": {
           "204": {
             "description": ""
+          },
+          "400": {
+            "description": "INVALID_TOKEN, VALIDATION_FAILED (password policy)"
+          },
+          "403": {
+            "description": "ACCOUNT_DISABLED"
+          },
+          "422": {
+            "description": "ROLE_NOT_GRANTABLE (the organization can no longer grant the invited role)"
+          },
+          "429": {
+            "description": "RATE_LIMITED (Retry-After)"
           },
           "default": {
             "description": "Problem details (RFC 9457)",
@@ -1214,7 +1223,8 @@
         ]
       },
       "post": {
-        "operationId": "MembersController_add",
+        "description": "Creates an invited account for unknown addresses and e-mails an invitation link (accepted with POST /auth/password/reset). Existing accounts are never attached directly, and the answer is the same for new and existing addresses. Inviting a pending address again renews its link.",
+        "operationId": "MembersController_invite",
         "parameters": [
           {
             "name": "id",
@@ -1230,7 +1240,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/AddMemberDto"
+                "$ref": "#/components/schemas/InviteMemberDto"
               }
             }
           }
@@ -1241,10 +1251,16 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AddedMemberDto"
+                  "$ref": "#/components/schemas/SentInvitationDto"
                 }
               }
             }
+          },
+          "409": {
+            "description": "MEMBER_ALREADY_EXISTS, INVITATION_CONFLICT (retry)"
+          },
+          "422": {
+            "description": "ROLE_NOT_GRANTABLE"
           },
           "default": {
             "description": "Problem details (RFC 9457)",
@@ -1257,7 +1273,7 @@
             }
           }
         },
-        "summary": "Add a member; unknown e-mails become invited accounts and receive an invitation",
+        "summary": "Invite an address to the organization (it joins on acceptance)",
         "tags": [
           "organizations"
         ],
@@ -1371,6 +1387,131 @@
         ]
       }
     },
+    "/api/v2/organizations/{id}/invitations": {
+      "get": {
+        "operationId": "InvitationsController_list",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "minimum": 1,
+              "default": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "name": "pageSize",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of the list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/InvitationDto"
+                      }
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/PageMetaDto"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem details (RFC 9457)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "summary": "List the pending invitations of an organization, newest first",
+        "tags": [
+          "organizations"
+        ],
+        "x-required-permissions": [
+          "user:manage"
+        ]
+      }
+    },
+    "/api/v2/organizations/{id}/invitations/{invitationId}": {
+      "delete": {
+        "operationId": "InvitationsController_cancel",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "invitationId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": ""
+          },
+          "default": {
+            "description": "Problem details (RFC 9457)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Withdraw an invitation (its link stops working)",
+        "tags": [
+          "organizations"
+        ],
+        "x-required-permissions": [
+          "user:manage"
+        ]
+      }
+    },
     "/api/v2/api-keys": {
       "get": {
         "operationId": "ApiKeysController_list",
@@ -1463,6 +1604,7 @@
         ]
       },
       "post": {
+        "description": "org_admins create keys in their active organization with the scopes telemetry:ingest and ais:read; ais:ingest (the AIS feed shared by every tenant) is granted by super admins only.",
         "operationId": "ApiKeysController_create",
         "parameters": [],
         "requestBody": {
@@ -1485,6 +1627,9 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "SCOPE_NOT_GRANTABLE (ais:ingest requested by a non super admin), or another organization than the active one"
           },
           "default": {
             "description": "Problem details (RFC 9457)",
@@ -2731,7 +2876,7 @@
           "joinedAt"
         ]
       },
-      "AddMemberDto": {
+      "InviteMemberDto": {
         "type": "object",
         "properties": {
           "email": {
@@ -2743,7 +2888,7 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 200,
-            "description": "Display name of a new account"
+            "description": "Display name shown to the organization until the invitee accepts (and of a new account)"
           },
           "role": {
             "type": "string",
@@ -2769,26 +2914,20 @@
           "role"
         ]
       },
-      "AddedMemberDto": {
+      "SentInvitationDto": {
         "type": "object",
         "properties": {
-          "userId": {
+          "id": {
             "type": "string",
             "format": "uuid"
           },
           "email": {
-            "type": "string"
+            "type": "string",
+            "description": "The invited address (normalized)"
           },
           "name": {
-            "type": "string"
-          },
-          "status": {
             "type": "string",
-            "enum": [
-              "active",
-              "invited",
-              "disabled"
-            ]
+            "description": "Display name entered by the inviting admin"
           },
           "role": {
             "type": "string",
@@ -2799,32 +2938,39 @@
               "viewer"
             ]
           },
-          "mfaEnabled": {
-            "type": "boolean"
-          },
-          "lastLoginAt": {
+          "invitedBy": {
             "type": "string",
-            "format": "date-time",
-            "nullable": true
+            "format": "uuid",
+            "nullable": true,
+            "description": "User id of the inviting admin"
           },
-          "joinedAt": {
+          "createdAt": {
             "type": "string",
             "format": "date-time"
           },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The link stops working at this time (send it again to renew)"
+          },
+          "expired": {
+            "type": "boolean",
+            "description": "The link has expired"
+          },
           "invitationSent": {
             "type": "boolean",
-            "description": "An invitation e-mail was requested (new or not yet activated accounts)"
+            "description": "The invitation e-mail was requested (false: the message bus failed; send the invitation again)"
           }
         },
         "required": [
-          "userId",
+          "id",
           "email",
           "name",
-          "status",
           "role",
-          "mfaEnabled",
-          "lastLoginAt",
-          "joinedAt",
+          "invitedBy",
+          "createdAt",
+          "expiresAt",
+          "expired",
           "invitationSent"
         ]
       },
@@ -2843,6 +2989,61 @@
         },
         "required": [
           "role"
+        ]
+      },
+      "InvitationDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "email": {
+            "type": "string",
+            "description": "The invited address (normalized)"
+          },
+          "name": {
+            "type": "string",
+            "description": "Display name entered by the inviting admin"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "org_admin",
+              "fleet_manager",
+              "authority",
+              "viewer"
+            ]
+          },
+          "invitedBy": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true,
+            "description": "User id of the inviting admin"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The link stops working at this time (send it again to renew)"
+          },
+          "expired": {
+            "type": "boolean",
+            "description": "The link has expired"
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "name",
+          "role",
+          "invitedBy",
+          "createdAt",
+          "expiresAt",
+          "expired"
         ]
       },
       "ApiKeyDto": {
@@ -2921,6 +3122,7 @@
             "type": "array",
             "minItems": 1,
             "uniqueItems": true,
+            "description": "ais:ingest (writes the AIS feed shared by every tenant) is granted by super admins only (403 SCOPE_NOT_GRANTABLE otherwise); org_admins grant telemetry:ingest and ais:read",
             "items": {
               "type": "string",
               "enum": [

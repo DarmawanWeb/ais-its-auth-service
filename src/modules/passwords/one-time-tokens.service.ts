@@ -21,9 +21,10 @@ export interface IssuedOneTimeToken {
 }
 
 /**
- * One-time tokens of password reset and invitation links (spec §13.1): 256
- * random bits, stored as SHA-256, valid once and until `expires_at`. A new
- * token invalidates the user's previous unused ones.
+ * One-time tokens of password reset links (spec §13.1): 256 random bits,
+ * stored as SHA-256, valid once and until `expires_at`. A new token
+ * invalidates the user's previous unused ones. (Invitation links live with
+ * their invitation, see `InvitationService`.)
  */
 @Injectable()
 export class OneTimeTokens {
@@ -55,6 +56,18 @@ export class OneTimeTokens {
       );
     });
     return { token, expiresAt };
+  }
+
+  /** `true` when `presented` is an unused, unexpired token (no lock, no write: a cheap pre-check). */
+  async isRedeemable(
+    presented: string,
+    now: Date = new Date(),
+  ): Promise<boolean> {
+    if (!isOpaqueToken(presented)) return false;
+    return (
+      (await this.repository.findOpenByHash(sha256Hex(presented), now)) !==
+      undefined
+    );
   }
 
   /**

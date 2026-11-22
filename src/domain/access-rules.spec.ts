@@ -13,9 +13,11 @@ import {
   canReadAuditLogs,
   canViewOrganization,
   grantableRoles,
+  grantableScopes,
   isRoleGrantable,
   removesLastAdmin,
   rolesStrandedByKind,
+  ungrantableScopes,
 } from './access-rules.js';
 
 const ORG = '01a1f000-0000-7000-8000-000000000001';
@@ -52,6 +54,32 @@ describe('access rules (spec §8.4, §8.5, §13.1)', () => {
     expect(canManageApiKeys(actor(['fleet_manager']), ORG)).toBe(false);
     expect(canManageApiKeys(actor(['authority']), ORG)).toBe(false);
     expect(canManageApiKeys(actor(['super_admin'], null), OTHER)).toBe(true);
+  });
+
+  it('reserves the shared-feed scope ais:ingest to super admins', () => {
+    expect(grantableScopes(actor(['super_admin'], null))).toEqual([
+      'ais:ingest',
+      'telemetry:ingest',
+      'ais:read',
+    ]);
+    expect(grantableScopes(actor(['org_admin']))).toEqual([
+      'telemetry:ingest',
+      'ais:read',
+    ]);
+    expect(
+      ungrantableScopes(actor(['org_admin']), [
+        'telemetry:ingest',
+        'ais:ingest',
+        'ais:ingest',
+      ]),
+    ).toEqual(['ais:ingest']);
+    expect(
+      ungrantableScopes(actor(['org_admin']), ['ais:read', 'telemetry:ingest']),
+    ).toEqual([]);
+    // An org_admin who is also a platform admin (super_admin) may grant it.
+    expect(
+      ungrantableScopes(actor(['org_admin', 'super_admin']), ['ais:ingest']),
+    ).toEqual([]);
   });
 
   it('restricts the audit log to the own organization (super admins: all, incl. platform records)', () => {

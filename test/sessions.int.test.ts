@@ -1,4 +1,9 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { ServiceUnavailableError } from '@darmawanweb/ais-its-nest';
+import { PG_POOL, type Pool } from '@darmawanweb/ais-its-nest/db';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+
+import { SessionsRepository } from '../src/modules/accounts/sessions.repository.js';
+import { TokenService } from '../src/modules/tokens/token.service.js';
 
 import {
   startTestService,
@@ -131,6 +136,74 @@ describe('login, refresh rotation, logout and throttling', () => {
     const successor = await refresh(second);
     expect(successor.statusCode).toBe(401);
     expect(successor.json()).toMatchObject({ code: 'INVALID_REFRESH_TOKEN' });
+  });
+
+  it('keeps the refresh cookie and the token when a refresh fails transiently', async () => {
+    const user = await service.createUser({
+      email: service.email('transient'),
+    });
+    const session = await service.login(user.email, TEST_PASSWORD);
+
+    // Database failure while locking the token: 500, the cookie is kept.
+    const sessions = service.app.get(SessionsRepository);
+    const lock = vi
+      .spyOn(sessions, 'lockToken')
+      .mockRejectedValueOnce(new Error('Connection terminated unexpectedly'));
+    const outage = await refresh(session.cookie);
+    lock.mockRestore();
+    expect(outage.statusCode).toBe(500);
+    expect(outage.headers['set-cookie']).toBeUndefined();
+
+    // No signing key: 503, and the rotation rolled back with it.
+    const tokens = service.app.get(TokenService);
+    const sign = vi
+      .spyOn(tokens, 'issueAccessToken')
+      .mockRejectedValueOnce(
+        new ServiceUnavailableError('No signing key is loaded'),
+      );
+    const unavailable = await refresh(session.cookie);
+    sign.mockRestore();
+    expect(unavailable.statusCode).toBe(503);
+    expect(unavailable.headers['set-cookie']).toBeUndefined();
+
+    // The same cookie still works: no reuse detection, no lost session.
+    const retried = await refresh(session.cookie);
+    expect(retried.statusCode).toBe(200);
+    expect(String(retried.headers['set-cookie'])).toMatch(
+      /^aisits_rt=[A-Za-z0-9_-]{43};/,
+    );
+  });
+
+  it('signs in when X-Forwarded-For is not an address (session ip null)', async () => {
+    const user = await service.createUser({ email: service.email('xff') });
+    const pool = service.app.get<unknown, Pool>(PG_POOL);
+    const ipOf = async (accessToken: string): Promise<string | null> => {
+      const [, payload = ''] = accessToken.split('.');
+      const { sid } = JSON.parse(
+        Buffer.from(payload, 'base64url').toString('utf8'),
+      ) as { sid: string };
+      const row = await pool.query<{ ip: string | null }>(
+        'SELECT host(ip) AS ip FROM sessions WHERE id = $1',
+        [sid],
+      );
+      return row.rows[0]?.ip ?? null;
+    };
+    for (const header of ['foo', '203.0.113.5, bar', '[2001:db8::1]x']) {
+      const session = await service.login(user.email, TEST_PASSWORD, header);
+      expect(await ipOf(session.accessToken)).toBeNull();
+    }
+    const withPort = await service.login(
+      user.email,
+      TEST_PASSWORD,
+      '198.51.100.23:5678',
+    );
+    expect(await ipOf(withPort.accessToken)).toBe('198.51.100.23');
+    const bracketed = await service.login(
+      user.email,
+      TEST_PASSWORD,
+      '[2001:db8::1]:443',
+    );
+    expect(await ipOf(bracketed.accessToken)).toBe('2001:db8::1');
   });
 
   it('refuses refreshes without a cookie or from a foreign origin', async () => {

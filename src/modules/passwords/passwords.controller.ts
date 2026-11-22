@@ -13,9 +13,13 @@ import {
 } from '@nestjs/common';
 import {
   ApiAcceptedResponse,
+  ApiBadRequestResponse,
+  ApiForbiddenResponse,
   ApiNoContentResponse,
   ApiOperation,
   ApiTags,
+  ApiTooManyRequestsResponse,
+  ApiUnprocessableEntityResponse,
 } from '@nestjs/swagger';
 import type { FastifyRequest } from 'fastify';
 
@@ -55,8 +59,19 @@ export class PasswordsController {
   @ApiOperation({
     summary:
       'Set a new password with a reset or invitation token (revokes every session)',
+    description:
+      'An invitation token also writes the membership of the invitation (and activates a new account). Failed attempts are throttled per client IP.',
   })
   @ApiNoContentResponse()
+  @ApiBadRequestResponse({
+    description: 'INVALID_TOKEN, VALIDATION_FAILED (password policy)',
+  })
+  @ApiForbiddenResponse({ description: 'ACCOUNT_DISABLED' })
+  @ApiUnprocessableEntityResponse({
+    description:
+      'ROLE_NOT_GRANTABLE (the organization can no longer grant the invited role)',
+  })
+  @ApiTooManyRequestsResponse({ description: 'RATE_LIMITED (Retry-After)' })
   async reset(
     @Body() body: ResetPasswordDto,
     @Req() request: FastifyRequest,

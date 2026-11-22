@@ -22,6 +22,7 @@ import {
 } from '@nestjs/common';
 import {
   ApiCreatedResponse,
+  ApiForbiddenResponse,
   ApiNoContentResponse,
   ApiOkResponse,
   ApiOperation,
@@ -71,8 +72,16 @@ export class ApiKeysController {
 
   @Post()
   @RequirePermissions('api_key:manage')
-  @ApiOperation({ summary: 'Create an API key (the key is returned once)' })
+  @ApiOperation({
+    summary: 'Create an API key (the key is returned once)',
+    description:
+      'org_admins create keys in their active organization with the scopes telemetry:ingest and ais:read; ais:ingest (the AIS feed shared by every tenant) is granted by super admins only.',
+  })
   @ApiCreatedResponse({ type: CreatedApiKeyDto })
+  @ApiForbiddenResponse({
+    description:
+      'SCOPE_NOT_GRANTABLE (ais:ingest requested by a non super admin), or another organization than the active one',
+  })
   async create(
     @Body() body: CreateApiKeyDto,
     @CurrentPrincipal() principal: Principal,

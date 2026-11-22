@@ -6,6 +6,52 @@ All notable changes to `ais-its-auth-service` are documented in this file. The f
 
 ## [Unreleased]
 
+### Security
+
+- `ais:ingest` API keys (the AIS feed shared by every tenant) can only be granted by super admins;
+  `org_admin`s get `403 SCOPE_NOT_GRANTABLE` and grant `telemetry:ingest` and `ais:read` only.
+- `POST /organizations/:id/members` no longer attaches existing accounts of any tenant: it records
+  an invitation (new table `membership_invitations`, migration `0002`) and e-mails the link; the
+  membership is written when the invitee accepts it with `POST /auth/password/reset`. The answer,
+  the new `GET /organizations/:id/invitations` and the audit record (target
+  `membership_invitation`) are identical for new and existing addresses and show only what the
+  admin typed. New `DELETE /organizations/:id/invitations/:invitationId`; kind changes also check
+  the roles of pending invitations.
+- Password resets and invitation acceptances lock the user row and write the password only
+  `WHERE status <> 'disabled'`; disabling an account locks the row too, so a reset racing a
+  disable can no longer re-enable the account. Password changes refuse disabled accounts the same
+  way, and the login rehash is a compare-and-set on the old hash.
+- Reset and invitation links are checked before the argon2id hash is computed, and failed
+  attempts are throttled (10 / 15 min per IP), so anonymous garbage no longer slows down sign-in.
+- Failed writes of `users` rethrow a `SanitizedDatabaseError` without SQL parameters or driver
+  `detail`: password hashes and sealed MFA secrets no longer reach error logs or responses.
+- `pnpm seed:demo` refuses `NODE_ENV=production` unless `SEED_DEMO_ALLOW_PRODUCTION=true` and a
+  non-default `SEED_DEMO_PASSWORD` are set, and audits everything it creates.
+
+### Fixed
+
+- A malformed client address from a trusted proxy (`X-Forwarded-For: foo`, `1.2.3.4:5678`,
+  `[2001:db8::1]`) no longer makes login and MFA verification fail with `500`: client IPs are
+  normalized (ports, brackets, zone ids stripped; anything else `null`) for sessions and
+  throttle keys.
+- `POST /auth/refresh` clears the cookie only for refusals that end the session
+  (`INVALID_REFRESH_TOKEN`, `REFRESH_TOKEN_REUSED`, `ACCOUNT_DISABLED`), and the access token is
+  signed before the rotation commits, so a transient failure (database outage, no signing key)
+  neither logs the user out nor turns the retry into a reuse detection.
+- The audit consumer stores events with characters PostgreSQL refuses (U+0000, lone surrogates)
+  or absurdly nested `meta` instead of retrying them until they reach the DLQ.
+- `openapi.json` no longer references the undeclared security scheme `aisits_rt`; the cookie is
+  described on the refresh and logout operations.
+
+- The Docker image no longer installs the kit's test-only optional peers (`testcontainers`,
+  `@nestjs/testing` and their tree: dockerode, ssh2, archiver, …): `.pnpmfile.cjs` keeps them out
+  of the production graph (`node_modules` 233 → 200 MB, image 521 → 481 MB).
+
+### Added
+
+- Rotation of `KEY_ENCRYPTION_SECRET`: `KEY_ENCRYPTION_SECRET_PREVIOUS` (values it sealed still
+  open) and `pnpm rotate:key-secret` (re-seals signing keys and MFA secrets in one transaction).
+
 ## [0.1.0] - 2026-11-21
 
 ### Added

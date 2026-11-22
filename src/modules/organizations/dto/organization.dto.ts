@@ -19,6 +19,7 @@ import {
   type OrganizationKind,
 } from '../../../domain/access-rules.js';
 import { SLUG_MAX_LENGTH, SLUG_PATTERN } from '../../../domain/identity.js';
+import type { InvitationRecord } from '../../accounts/invitations.repository.js';
 import type { MemberRecord } from '../../accounts/memberships.repository.js';
 
 /** Kinds that can be created through the API (the platform organization comes from the bootstrap). */
@@ -159,22 +160,75 @@ export class MemberDto {
   }
 }
 
-/** Result of `POST /organizations/:id/members`. */
-export class AddedMemberDto extends MemberDto {
+/**
+ * A pending invitation as the organization sees it: only what its admin
+ * typed. Whether the address already has an account (and anything about
+ * that account) stays hidden until the invitee accepts.
+ */
+export class InvitationDto {
+  @ApiProperty({ format: 'uuid' })
+  readonly id: string;
+
+  @ApiProperty({ description: 'The invited address (normalized)' })
+  readonly email: string;
+
+  @ApiProperty({ description: 'Display name entered by the inviting admin' })
+  readonly name: string;
+
+  @ApiProperty({ enum: ORG_ROLES })
+  readonly role: string;
+
+  @ApiProperty({
+    type: String,
+    format: 'uuid',
+    nullable: true,
+    description: 'User id of the inviting admin',
+  })
+  readonly invitedBy: string | null;
+
+  @ApiProperty({ format: 'date-time' })
+  readonly createdAt: string;
+
+  @ApiProperty({
+    format: 'date-time',
+    description: 'The link stops working at this time (send it again to renew)',
+  })
+  readonly expiresAt: string;
+
+  @ApiProperty({ description: 'The link has expired' })
+  readonly expired: boolean;
+
+  constructor({ invitation, email }: InvitationRecord, now: Date = new Date()) {
+    this.id = invitation.id;
+    this.email = email;
+    this.name = invitation.name;
+    this.role = invitation.role;
+    this.invitedBy = invitation.invitedBy;
+    this.createdAt = invitation.createdAt.toISOString();
+    this.expiresAt = invitation.expiresAt.toISOString();
+    this.expired = invitation.expiresAt.getTime() <= now.getTime();
+  }
+}
+
+/**
+ * Result of `POST /organizations/:id/members`: the invitation, identical
+ * for new addresses and existing accounts.
+ */
+export class SentInvitationDto extends InvitationDto {
   @ApiProperty({
     description:
-      'An invitation e-mail was requested (new or not yet activated accounts)',
+      'The invitation e-mail was requested (false: the message bus failed; send the invitation again)',
   })
   readonly invitationSent: boolean;
 
-  constructor(record: MemberRecord, invitationSent: boolean) {
+  constructor(record: InvitationRecord, invitationSent: boolean) {
     super(record);
     this.invitationSent = invitationSent;
   }
 }
 
 /** `POST /organizations/:id/members`. */
-export class AddMemberDto {
+export class InviteMemberDto {
   @ApiProperty({ example: 'officer@example.com', maxLength: 320 })
   @EmailInput()
   @IsEmail()
@@ -184,7 +238,8 @@ export class AddMemberDto {
   @ApiProperty({
     minLength: 1,
     maxLength: 200,
-    description: 'Display name of a new account',
+    description:
+      'Display name shown to the organization until the invitee accepts (and of a new account)',
   })
   @TrimmedInput()
   @IsString()

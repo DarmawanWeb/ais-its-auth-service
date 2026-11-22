@@ -20,6 +20,9 @@ export const DEV_KEY_ENCRYPTION_SECRET =
 /** Development default of `BOOTSTRAP_ADMIN_PASSWORD` (spec §13.1). */
 export const DEV_BOOTSTRAP_ADMIN_PASSWORD = 'ChangeMe123!';
 
+/** Development default of `SEED_DEMO_PASSWORD`; `pnpm seed:demo` refuses it in production. */
+export const DEV_SEED_DEMO_PASSWORD = 'DemoPass2026';
+
 /** Minimum length of `KEY_ENCRYPTION_SECRET` (spec §13.1: 32+ characters). */
 export const MIN_KEY_ENCRYPTION_SECRET_LENGTH = 32;
 
@@ -39,6 +42,15 @@ export const configSchema = defineConfig({
     .string()
     .min(MIN_KEY_ENCRYPTION_SECRET_LENGTH)
     .default(DEV_KEY_ENCRYPTION_SECRET),
+  /**
+   * The previous `KEY_ENCRYPTION_SECRET` while rotating it: values it sealed
+   * still open, and `pnpm rotate:key-secret` re-seals them with the current
+   * secret. Unset it once the rotation ran.
+   */
+  KEY_ENCRYPTION_SECRET_PREVIOUS: z
+    .string()
+    .min(MIN_KEY_ENCRYPTION_SECRET_LENGTH)
+    .optional(),
   /** Access token lifetime, seconds (spec §8.2: 15 min). */
   ACCESS_TOKEN_TTL: envInteger(60, 3_600).default(900),
   /** Refresh token (session inactivity) lifetime, days (spec §8.3: 30 d). */
@@ -61,7 +73,12 @@ export const configSchema = defineConfig({
   /** Locale of transactional e-mails when the request names none. */
   EMAIL_DEFAULT_LOCALE: z.enum(['id', 'en']).default('id'),
   /** Password of the users created by `pnpm seed:demo`. */
-  SEED_DEMO_PASSWORD: z.string().min(10).default('DemoPass2026'),
+  SEED_DEMO_PASSWORD: z.string().min(10).default(DEV_SEED_DEMO_PASSWORD),
+  /**
+   * `pnpm seed:demo` refuses to run with `NODE_ENV=production` unless this
+   * is `true` and `SEED_DEMO_PASSWORD` is not the documented default.
+   */
+  SEED_DEMO_ALLOW_PRODUCTION: envBoolean().default(false),
 }).superRefine((config, context) => {
   if (
     config.NODE_ENV === 'production' &&
@@ -72,6 +89,13 @@ export const configSchema = defineConfig({
       path: ['KEY_ENCRYPTION_SECRET'],
       message:
         'Must be a secret of its own in production (not the development default)',
+    });
+  }
+  if (config.KEY_ENCRYPTION_SECRET_PREVIOUS === config.KEY_ENCRYPTION_SECRET) {
+    context.addIssue({
+      code: 'custom',
+      path: ['KEY_ENCRYPTION_SECRET_PREVIOUS'],
+      message: 'Must differ from KEY_ENCRYPTION_SECRET (it is the old secret)',
     });
   }
 });

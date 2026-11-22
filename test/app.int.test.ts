@@ -312,14 +312,35 @@ describe(`${SERVICE.packageName} platform behaviour, bootstrap and signing keys`
       url: '/openapi.json',
     });
     expect(response.statusCode).toBe(200);
-    const document = response.json<{ paths: Record<string, unknown> }>();
+    const document = response.json<{
+      paths: Record<
+        string,
+        Record<string, { security?: Record<string, unknown>[] }>
+      >;
+      security?: Record<string, unknown>[];
+      components: { securitySchemes: Record<string, unknown> };
+    }>();
     expect(Object.keys(document.paths)).toEqual(
       expect.arrayContaining([
         '/api/v2/auth/login',
         '/.well-known/jwks.json',
         '/internal/api-keys/introspect',
+        '/api/v2/organizations/{id}/invitations',
       ]),
     );
+    // OpenAPI 3: every security requirement names a declared scheme.
+    const used = new Set(
+      [
+        ...(document.security ?? []),
+        ...Object.values(document.paths).flatMap((operations) =>
+          Object.values(operations).flatMap(
+            (operation) => operation.security ?? [],
+          ),
+        ),
+      ].flatMap((requirement) => Object.keys(requirement)),
+    );
+    const declared = Object.keys(document.components.securitySchemes);
+    expect([...used].filter((name) => !declared.includes(name))).toEqual([]);
     const metrics = await service.app.inject({
       method: 'GET',
       url: '/metrics',

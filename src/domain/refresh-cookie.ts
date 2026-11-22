@@ -45,3 +45,25 @@ export function clearedRefreshCookieAttributes(
 ): RefreshCookieAttributes {
   return { ...refreshCookieAttributes(secure, 0), maxAge: 0 };
 }
+
+/**
+ * Problem codes of a refresh that ends the session for good: the browser
+ * must drop its cookie. Every other failure (database outage, no signing
+ * key loaded, a timeout) is transient — the session is still valid on the
+ * server — so the cookie is kept and the client can retry.
+ */
+export const SESSION_ENDING_REFRESH_CODES: ReadonlySet<string> = new Set([
+  'INVALID_REFRESH_TOKEN',
+  'REFRESH_TOKEN_REUSED',
+  'ACCOUNT_DISABLED',
+]);
+
+/** `true` when a failed refresh must clear the cookie (see {@link SESSION_ENDING_REFRESH_CODES}). */
+export function refreshFailureEndsSession(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    'code' in error &&
+    typeof error.code === 'string' &&
+    SESSION_ENDING_REFRESH_CODES.has(error.code)
+  );
+}

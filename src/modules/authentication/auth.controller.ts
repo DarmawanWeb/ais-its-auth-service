@@ -23,7 +23,6 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import {
-  ApiCookieAuth,
   ApiExtraModels,
   ApiForbiddenResponse,
   ApiNoContentResponse,
@@ -36,7 +35,10 @@ import {
 } from '@nestjs/swagger';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 
-import { REFRESH_COOKIE_NAME } from '../../domain/refresh-cookie.js';
+import {
+  REFRESH_COOKIE_NAME,
+  refreshFailureEndsSession,
+} from '../../domain/refresh-cookie.js';
 import { MfaService } from '../mfa/mfa.service.js';
 import { AccountSessionsService } from '../sessions/account-sessions.service.js';
 import { SessionService } from '../sessions/session.service.js';
@@ -60,6 +62,16 @@ import {
 } from './dto/auth.dto.js';
 import { ForwardAuthService } from './forward-auth.service.js';
 import { RefreshCookieJar } from './refresh-cookie.js';
+
+/**
+ * How the cookie endpoints read the session, in their operation description:
+ * the kit's OpenAPI options cannot declare a cookie security scheme, and an
+ * undeclared `security` name makes the document invalid (OpenAPI 3).
+ */
+const REFRESH_COOKIE_DESCRIPTION =
+  `Reads the refresh token from the HttpOnly cookie ${REFRESH_COOKIE_NAME} ` +
+  '(Path=/api/v2/auth, SameSite=Strict; set by login, MFA verify and refresh). ' +
+  'Browsers send it automatically; an Origin header, when present, must be one of CORS_ORIGINS or PUBLIC_BASE_URL.';
 
 /**
  * Sign-in, sessions and tokens: `/api/v2/auth` (spec §13.1). The refresh
@@ -134,9 +146,9 @@ export class AuthController {
   @Public()
   @UseGuards(CookieOriginGuard)
   @HttpCode(HttpStatus.OK)
-  @ApiCookieAuth(REFRESH_COOKIE_NAME)
   @ApiOperation({
     summary: 'Rotate the refresh cookie and get a new access token',
+    description: REFRESH_COOKIE_DESCRIPTION,
   })
   @ApiOkResponse({ type: AccessTokenDto })
   @ApiUnauthorizedResponse({
@@ -156,7 +168,9 @@ export class AuthController {
       this.cookies.set(reply, refreshed.refresh.token);
       return new AccessTokenDto(refreshed.access);
     } catch (error) {
-      this.cookies.clear(reply);
+      // Only refusals that end the session drop the cookie; a transient
+      // failure (database down, no signing key) keeps it for a retry.
+      if (refreshFailureEndsSession(error)) this.cookies.clear(reply);
       throw error;
     }
   }
@@ -165,9 +179,9 @@ export class AuthController {
   @Public()
   @UseGuards(CookieOriginGuard)
   @HttpCode(HttpStatus.NO_CONTENT)
-  @ApiCookieAuth(REFRESH_COOKIE_NAME)
   @ApiOperation({
     summary: 'Sign out: revoke the session of the refresh cookie and clear it',
+    description: REFRESH_COOKIE_DESCRIPTION,
   })
   @ApiNoContentResponse()
   async logout(

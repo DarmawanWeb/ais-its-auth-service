@@ -27,6 +27,10 @@ import {
 } from '../../domain/access-rules.js';
 import { normalizeEmail } from '../../domain/identity.js';
 import {
+  type InvitationRecord,
+  InvitationsRepository,
+} from '../accounts/invitations.repository.js';
+import {
   type MemberRecord,
   MembershipsRepository,
 } from '../accounts/memberships.repository.js';
@@ -39,29 +43,28 @@ import {
 import { InvitationService } from '../passwords/invitation.service.js';
 
 /** `POST /organizations/:id/members`. */
-export interface AddMemberInput {
+export interface InviteMemberInput {
   readonly email: string;
   readonly name: string;
   readonly role: OrgRole;
   readonly locale?: Locale | undefined;
 }
 
-/** A member added (or re-invited). */
-export interface AddedMember {
-  readonly record: MemberRecord;
+/** An invitation sent (or sent again). */
+export interface SentInvitation {
+  readonly record: InvitationRecord;
+  /** The e-mail request was published (`false`: NATS failed; send it again). */
   readonly invitationSent: boolean;
 }
 
-/** Name of the primary key of `memberships`. */
-const MEMBERSHIP_PRIMARY_KEY = 'memberships_pkey';
-
 /**
- * Members of organizations (spec §13.1, `user:manage`): `org_admin`s manage
- * their active organization, super admins every organization. Rules
- * (`domain/access-rules.ts`): roles must be grantable in the organization's
- * kind, the last `org_admin` can be neither demoted nor removed (checked
- * under row locks). Membership changes do not touch existing access tokens
- * (short TTL); a removed member's sessions in that organization are revoked.
+ * Members and invitations of organizations (spec §13.1, `user:manage`):
+ * `org_admin`s manage their active organization, super admins every
+ * organization. Rules (`domain/access-rules.ts`): roles must be grantable in
+ * the organization's kind, the last `org_admin` can be neither demoted nor
+ * removed (checked under row locks), and accounts join only by accepting an
+ * invitation. Membership changes do not touch existing access tokens (short
+ * TTL); a removed member's sessions in that organization are revoked.
  */
 @Injectable()
 export class MembersService {
@@ -71,6 +74,7 @@ export class MembersService {
     private readonly memberships: MembershipsRepository,
     private readonly users: UsersRepository,
     private readonly sessions: SessionsRepository,
+    private readonly invitationRows: InvitationsRepository,
     private readonly invitations: InvitationService,
     private readonly audit: AuditService,
   ) {}
@@ -90,19 +94,28 @@ export class MembersService {
   }
 
   /**
-   * Adds a member. Unknown e-mails get an `invited` account; accounts that
-   * have not accepted an invitation yet receive one (again, also when they
-   * are already members: the way to resend an invitation).
+   * Invites an address to the organization. Nobody is attached without
+   * consent: the membership is written when the invitee accepts the
+   * e-mailed link. Unknown addresses get an `invited` account (spec
+   * §13.1); existing accounts — of any tenant — only receive the e-mail.
+   * The answer, the invitation list and the audit record are the same in
+   * both cases and show only what the admin typed, so an admin learns
+   * nothing about accounts outside the organization. Inviting a pending
+   * address again renews the link (the way to resend an invitation).
+   *
+   * @throws {ConflictError} `409 MEMBER_ALREADY_EXISTS` for a member of the organization.
+   * @throws {DomainError} `422 ROLE_NOT_GRANTABLE` for roles the organization's kind cannot grant.
    */
-  async add(
+  async invite(
     orgId: string,
-    input: AddMemberInput,
+    input: InviteMemberInput,
     principal: Principal,
     request: AuditRequest,
-  ): Promise<AddedMember> {
+  ): Promise<SentInvitation> {
     const { actor, organization } = await this.manageable(orgId, principal);
     const email = normalizeEmail(input.email);
-    const { record, created } = await this.conflictsAsProblems(orgId, () =>
+    const token = this.invitations.newToken();
+    const { invitation, user } = await this.conflictsAsProblems(orgId, () =>
       this.db.transaction(async (tx) => {
         await this.assertGrantableLocked(orgId, input.role, tx);
         const user =
@@ -119,43 +132,86 @@ export class MembersService {
             tx,
           ));
         const existing = await this.memberships.find(user.id, orgId, tx);
-        if (existing !== undefined) {
-          if (user.status !== 'invited')
-            throw AuthErrors.memberExists(orgId, user.id);
-          return { record: { membership: existing, user }, created: false };
-        }
-        const membership = await this.memberships.insert(
-          { userId: user.id, orgId, role: input.role },
+        // A member that never activated the account may be invited again.
+        if (existing !== undefined && user.status !== 'invited')
+          throw AuthErrors.memberExists(orgId);
+        const invitation = await this.invitationRows.upsert(
+          {
+            id: newId(),
+            orgId,
+            userId: user.id,
+            role: input.role,
+            name: input.name,
+            invitedBy: actor.id,
+            tokenHash: token.tokenHash,
+            expiresAt: token.expiresAt,
+          },
           tx,
         );
-        return { record: { membership, user }, created: true };
+        return { invitation, user };
       }),
     );
-    const invitationSent =
-      record.user.status === 'invited' &&
-      (await this.invitations.send({
-        user: record.user,
-        organization,
-        role: record.membership.role,
-        invitedBy: actor.name,
-        locale: input.locale,
-      }));
+    const invitationSent = await this.invitations.send({
+      to: user.email,
+      recipientName: user.name,
+      organization,
+      role: invitation.role,
+      invitedBy: actor.name,
+      token,
+      locale: input.locale,
+    });
+    // The invitation, not the account, is the target: the organization's
+    // audit log must not reveal the id of an account outside it.
     await this.audit.record(
       {
-        action: created ? 'membership.create' : 'membership.invite',
-        targetType: 'user',
-        targetId: record.user.id,
+        action: 'membership.invite',
+        targetType: 'membership_invitation',
+        targetId: invitation.id,
         orgId,
-        meta: {
-          role: record.membership.role,
-          invited: record.user.status === 'invited',
-          invitationSent,
-        },
+        meta: { role: invitation.role, invitationSent },
       },
       actor,
       request,
     );
-    return { record, invitationSent };
+    return { record: { invitation, email: user.email }, invitationSent };
+  }
+
+  /** One page of the organization's pending (and expired) invitations. */
+  async listInvitations(
+    orgId: string,
+    page: PageQuery,
+    principal: Principal,
+  ): Promise<Paginated<InvitationRecord>> {
+    await this.manageable(orgId, principal);
+    const { rows, total } = await this.invitationRows.listOfOrg(orgId, {
+      offset: pageOffset(page),
+      limit: page.pageSize,
+    });
+    return toPaginated(rows, page, total);
+  }
+
+  /** Withdraws an invitation: its link stops working. */
+  async cancelInvitation(
+    orgId: string,
+    invitationId: string,
+    principal: Principal,
+    request: AuditRequest,
+  ): Promise<void> {
+    const { actor } = await this.manageable(orgId, principal);
+    const deleted = await this.invitationRows.deleteInOrg(invitationId, orgId);
+    if (deleted === undefined)
+      throw AuthErrors.invitationNotFound(orgId, invitationId);
+    await this.audit.record(
+      {
+        action: 'membership.invite.cancel',
+        targetType: 'membership_invitation',
+        targetId: invitationId,
+        orgId,
+        meta: { role: deleted.role },
+      },
+      actor,
+      request,
+    );
   }
 
   /** Changes a member's role (never demoting the last `org_admin`). */
@@ -293,7 +349,11 @@ export class MembersService {
       throw AuthErrors.roleNotGrantable(role, organization.kind);
   }
 
-  /** Maps concurrent duplicate inserts (same e-mail, same membership) to `409`. */
+  /**
+   * Two concurrent invitations of the same new address both try to create
+   * its account; the loser answers `409 INVITATION_CONFLICT` (repeating the
+   * request renews the invitation) — never a hint that the address exists.
+   */
   private async conflictsAsProblems<T>(
     orgId: string,
     write: () => Promise<T>,
@@ -302,9 +362,7 @@ export class MembersService {
       return await write();
     } catch (error) {
       if (isUniqueViolation(error, USER_EMAIL_CONSTRAINT))
-        throw AuthErrors.emailTaken();
-      if (isUniqueViolation(error, MEMBERSHIP_PRIMARY_KEY))
-        throw AuthErrors.memberExists(orgId);
+        throw AuthErrors.invitationConflict(orgId);
       throw error;
     }
   }

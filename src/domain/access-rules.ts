@@ -1,7 +1,9 @@
-import type {
-  OrgRole,
-  Permission,
-  Role,
+import {
+  API_KEY_SCOPES,
+  type ApiKeyScope,
+  type OrgRole,
+  type Permission,
+  type Role,
 } from '@darmawanweb/ais-its-contracts/auth';
 
 /**
@@ -56,6 +58,46 @@ export function canViewOrganization(actor: Actor, isMember: boolean): boolean {
 /** API keys are managed by `org_admin`s of the key's organization and by super admins. */
 export function canManageApiKeys(actor: Actor, keyOrgId: string): boolean {
   return actor.can('api_key:manage') && actsWithin(actor, keyOrgId);
+}
+
+/**
+ * API-key scopes only super admins may grant. `ais:ingest` writes into the
+ * AIS feed that every tenant shares (§8.5): the ingestor accepts any key
+ * with the scope, whatever its organization, and faked positions would
+ * raise EWS, collision and transhipment alerts for other tenants and feed
+ * their CII distances. Spec §8.1/§8.4 do not say who may grant it; this
+ * rule closes that gap.
+ */
+export const PLATFORM_ONLY_SCOPES: readonly ApiKeyScope[] = ['ais:ingest'];
+
+/**
+ * Scopes the actor may put on a key. Super admins grant every scope; the
+ * `org_admin`s of the key's organization grant the tenant-safe ones:
+ * `telemetry:ingest` (the telemetry service refuses vessels outside the
+ * key's organization, §13.4) and `ais:read` (AIS data every tenant may
+ * read, §8.5).
+ */
+export function grantableScopes(
+  actor: Pick<Actor, 'isPlatformAdmin'>,
+): readonly ApiKeyScope[] {
+  if (actor.isPlatformAdmin) return API_KEY_SCOPES;
+  return API_KEY_SCOPES.filter(
+    (scope) => !PLATFORM_ONLY_SCOPES.includes(scope),
+  );
+}
+
+/**
+ * The requested scopes the actor may not grant (deduplicated, sorted);
+ * empty when the key may be created.
+ */
+export function ungrantableScopes(
+  actor: Pick<Actor, 'isPlatformAdmin'>,
+  requested: readonly ApiKeyScope[],
+): ApiKeyScope[] {
+  const allowed = grantableScopes(actor);
+  return [...new Set(requested)]
+    .filter((scope) => !allowed.includes(scope))
+    .sort();
 }
 
 /**

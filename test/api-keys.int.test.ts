@@ -39,7 +39,7 @@ describe('API keys and internal introspection', () => {
       method: 'POST',
       url: '/api/v2/api-keys',
       headers: session.headers,
-      payload: { name: 'AIS pusher Batam', scopes: ['ais:ingest'] },
+      payload: { name: 'Fuel meter Batam', scopes: ['telemetry:ingest'] },
     });
     expect(created.statusCode).toBe(201);
     const { apiKey } = created.json<{
@@ -71,8 +71,8 @@ describe('API keys and internal introspection', () => {
       active: true,
       keyId: apiKey.id,
       orgId: org.id,
-      scopes: ['ais:ingest'],
-      name: 'AIS pusher Batam',
+      scopes: ['telemetry:ingest'],
+      name: 'Fuel meter Batam',
     });
 
     // last_used_at is written at most once per minute.
@@ -111,6 +111,61 @@ describe('API keys and internal introspection', () => {
       withRevoked.json<{ data: { revokedAt: string | null }[] }>().data[0]
         ?.revokedAt,
     ).not.toBeNull();
+  });
+
+  it('grants the shared-feed scope ais:ingest to super admins only', async () => {
+    const org = await service.createOrganization();
+    const orgAdmin = await service.createUser({
+      memberships: [{ orgId: org.id, role: 'org_admin' }],
+    });
+    const session = await service.login(orgAdmin.email, TEST_PASSWORD);
+    const refused = await service.app.inject({
+      method: 'POST',
+      url: '/api/v2/api-keys',
+      headers: session.headers,
+      payload: {
+        name: 'Tenant pusher',
+        scopes: ['telemetry:ingest', 'ais:ingest'],
+      },
+    });
+    expect(refused.statusCode).toBe(403);
+    expect(refused.json()).toMatchObject({
+      code: 'SCOPE_NOT_GRANTABLE',
+      scopes: ['ais:ingest'],
+    });
+    const pool = service.app.get<unknown, Pool>(PG_POOL);
+    const stored = await pool.query(
+      'SELECT id FROM api_keys WHERE org_id = $1',
+      [org.id],
+    );
+    expect(stored.rowCount).toBe(0);
+
+    const tenantSafe = await service.app.inject({
+      method: 'POST',
+      url: '/api/v2/api-keys',
+      headers: session.headers,
+      payload: { name: 'Partner reader', scopes: ['ais:read'] },
+    });
+    expect(tenantSafe.statusCode).toBe(201);
+
+    const admin = await service.loginAdmin();
+    const granted = await service.app.inject({
+      method: 'POST',
+      url: '/api/v2/api-keys',
+      headers: admin.headers,
+      payload: {
+        name: 'AIS pusher Batam',
+        scopes: ['ais:ingest'],
+        orgId: org.id,
+      },
+    });
+    expect(granted.statusCode).toBe(201);
+    const { apiKey } = granted.json<{ apiKey: { key: string } }>();
+    expect((await introspect(apiKey.key)).json()).toMatchObject({
+      active: true,
+      orgId: org.id,
+      scopes: ['ais:ingest'],
+    });
   });
 
   it('keeps keys tenant-private and closed to other roles', async () => {

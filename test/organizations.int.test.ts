@@ -1,3 +1,5 @@
+import { PG_POOL, type Pool } from '@darmawanweb/ais-its-nest/db';
+import { waitFor } from '@darmawanweb/ais-its-nest/testing';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import {
@@ -12,10 +14,35 @@ import {
 interface MemberBody {
   userId: string;
   email: string;
+  name: string;
   role: string;
   status: string;
-  invitationSent: boolean;
 }
+
+interface InvitationBody {
+  id: string;
+  email: string;
+  name: string;
+  role: string;
+  invitedBy: string | null;
+  createdAt: string;
+  expiresAt: string;
+  expired: boolean;
+  invitationSent?: boolean;
+}
+
+/** Every field of `POST /organizations/:id/members` (the same for new and existing addresses). */
+const INVITATION_FIELDS = [
+  'createdAt',
+  'email',
+  'expired',
+  'expiresAt',
+  'id',
+  'invitationSent',
+  'invitedBy',
+  'name',
+  'role',
+];
 
 describe('organizations, invitations and members', () => {
   let service: TestService;
@@ -52,6 +79,35 @@ describe('organizations, invitations and members', () => {
       headers: session.headers,
       payload,
     });
+
+  const listOf = async <T>(session: Session, url: string): Promise<T[]> => {
+    const response = await service.app.inject({
+      method: 'GET',
+      url,
+      headers: session.headers,
+    });
+    expect(response.statusCode).toBe(200);
+    return response.json<{ data: T[] }>().data;
+  };
+
+  const members = (session: Session, orgId: string) =>
+    listOf<MemberBody>(session, `/api/v2/organizations/${orgId}/members`);
+
+  const invitations = (session: Session, orgId: string) =>
+    listOf<InvitationBody>(
+      session,
+      `/api/v2/organizations/${orgId}/invitations`,
+    );
+
+  /** Accepts the invitation e-mailed to `email` after `sequence` with `password`. */
+  const accept = async (email: string, sequence: number, password: string) => {
+    const message = await service.nextEmail(email, sequence);
+    return service.app.inject({
+      method: 'POST',
+      url: '/api/v2/auth/password/reset',
+      payload: { token: tokenOfLink(message.data.link), password },
+    });
+  };
 
   it('creates organizations with derived slugs and refuses taken slugs', async () => {
     const org = await createOrganization(
@@ -103,12 +159,22 @@ describe('organizations, invitations and members', () => {
       locale: 'en',
     });
     expect(added.statusCode).toBe(201);
-    expect(added.json<MemberBody>()).toMatchObject({
+    const sent = added.json<InvitationBody>();
+    expect(sent).toMatchObject({
       email,
+      name: 'Dewi Lestari',
       role: 'org_admin',
-      status: 'invited',
+      expired: false,
       invitationSent: true,
     });
+    expect(Object.keys(sent).sort()).toEqual(INVITATION_FIELDS);
+    // Pending: an invitation, not a member yet.
+    expect((await members(admin, org.id)).map((m) => m.email)).not.toContain(
+      email,
+    );
+    expect(await invitations(admin, org.id)).toEqual([
+      expect.objectContaining({ id: sent.id, email, name: 'Dewi Lestari' }),
+    ]);
 
     const message = await service.nextEmail(email, sequence);
     expect(message).toMatchObject({
@@ -140,6 +206,10 @@ describe('organizations, invitations and members', () => {
       activeOrgId: org.id,
       user: { status: 'active' },
     });
+    expect(await members(admin, org.id)).toEqual([
+      expect.objectContaining({ email, role: 'org_admin', status: 'active' }),
+    ]);
+    expect(await invitations(admin, org.id)).toEqual([]);
 
     // Members read their own organization; others do not see it.
     const own = await service.app.inject({
@@ -215,17 +285,20 @@ describe('organizations, invitations and members', () => {
     const second = await service.createUser({
       email: service.email('secondadmin'),
     });
+    const sequence = await service.lastEmailSequence();
     const added = await invite(session, org.id, {
       email: second.email,
-      name: 'ignored',
+      name: 'Second Admin',
       role: 'org_admin',
     });
     expect(added.statusCode).toBe(201);
-    expect(added.json<MemberBody>()).toMatchObject({
-      userId: second.id,
-      status: 'active',
-      invitationSent: false,
+    expect(added.json<InvitationBody>()).toMatchObject({
+      name: 'Second Admin',
+      invitationSent: true,
     });
+    expect(
+      (await accept(second.email, sequence, 'SecondAdmin2026')).statusCode,
+    ).toBe(204);
     const again = await invite(session, org.id, {
       email: second.email,
       name: 'ignored',
@@ -243,17 +316,186 @@ describe('organizations, invitations and members', () => {
     expect(stepDown.statusCode).toBe(200);
     expect(stepDown.json()).toMatchObject({ role: 'fleet_manager' });
 
-    const members = await service.app.inject({
-      method: 'GET',
-      url: `/api/v2/organizations/${org.id}/members`,
-      headers: admin.headers,
-    });
     expect(
-      members
-        .json<{ data: MemberBody[] }>()
-        .data.map((member) => member.role)
-        .sort(),
+      (await members(admin, org.id)).map((member) => member.role).sort(),
     ).toEqual(['fleet_manager', 'org_admin']);
+  });
+
+  it('never attaches or reveals accounts of other tenants: an invitation looks the same for every address', async () => {
+    const shipping = await createOrganization(
+      'PT Penyelidik Akun',
+      'shipping_company',
+    );
+    const authority = await createOrganization('Syahbandar Lain', 'authority');
+    const prober = await service.createUser({
+      email: service.email('prober'),
+      memberships: [{ orgId: shipping.id, role: 'org_admin' }],
+    });
+    const officer = await service.createUser({
+      email: service.email('officer-elsewhere'),
+      name: 'Real Officer Name',
+      memberships: [{ orgId: authority.id, role: 'authority' }],
+    });
+    await service.login(officer.email, TEST_PASSWORD); // sets last_login_at
+    const session = await service.login(prober.email, TEST_PASSWORD);
+    const sequence = await service.lastEmailSequence();
+
+    const existing = await invite(session, shipping.id, {
+      email: officer.email,
+      name: 'Whoever',
+      role: 'viewer',
+    });
+    const fresh = await invite(session, shipping.id, {
+      email: service.email('nobody-yet'),
+      name: 'Whoever',
+      role: 'viewer',
+    });
+    expect(existing.statusCode).toBe(201);
+    expect(fresh.statusCode).toBe(201);
+    const forExisting = existing.json<InvitationBody>();
+    const forFresh = fresh.json<InvitationBody>();
+    expect(Object.keys(forExisting).sort()).toEqual(INVITATION_FIELDS);
+    expect(Object.keys(forFresh).sort()).toEqual(INVITATION_FIELDS);
+    for (const body of [forExisting, forFresh]) {
+      expect(body).toMatchObject({
+        name: 'Whoever',
+        role: 'viewer',
+        invitedBy: prober.id,
+        expired: false,
+        invitationSent: true,
+      });
+    }
+    expect(existing.body).not.toContain('Real Officer Name');
+    expect(existing.body).not.toContain(officer.id);
+
+    // Not attached: no membership, not listed as a member.
+    const pool = service.app.get<unknown, Pool>(PG_POOL);
+    const attached = await pool.query(
+      'SELECT 1 FROM memberships WHERE user_id = $1 AND org_id = $2',
+      [officer.id, shipping.id],
+    );
+    expect(attached.rowCount).toBe(0);
+    expect(
+      (await members(session, shipping.id)).map((m) => m.email),
+    ).not.toContain(officer.email);
+    const pending = await invitations(session, shipping.id);
+    expect(pending.map((invitation) => invitation.name)).toEqual([
+      'Whoever',
+      'Whoever',
+    ]);
+    expect(JSON.stringify(pending)).not.toContain(officer.id);
+
+    // The organization's audit log names the invitations, never the account.
+    const records = await waitFor(
+      async () => {
+        const response = await service.app.inject({
+          method: 'GET',
+          url: '/api/v2/audit-logs?action=membership.invite',
+          headers: session.headers,
+        });
+        const data = response.json<{ data: { targetType: string }[] }>().data;
+        return data.length >= 2 ? response : undefined;
+      },
+      { timeoutMs: 10_000, message: 'membership.invite audit records' },
+    );
+    expect(records.body).not.toContain(officer.id);
+    expect(
+      records
+        .json<{ data: { targetType: string }[] }>()
+        .data.map((record) => record.targetType),
+    ).toEqual(['membership_invitation', 'membership_invitation']);
+
+    // The account owner is asked and joins only by accepting.
+    const message = await service.nextEmail(officer.email, sequence);
+    expect(message).toMatchObject({
+      template: 'account_invite',
+      data: {
+        name: 'Real Officer Name',
+        organizationName: 'PT Penyelidik Akun',
+        role: 'viewer',
+      },
+    });
+    const accepted = await service.app.inject({
+      method: 'POST',
+      url: '/api/v2/auth/password/reset',
+      payload: {
+        token: tokenOfLink(message.data.link),
+        password: 'JoinedLater2026',
+      },
+    });
+    expect(accepted.statusCode).toBe(204);
+    const joined = await service.login(officer.email, 'JoinedLater2026');
+    expect(
+      (joined.body.memberships as { orgId: string }[])
+        .map((membership) => membership.orgId)
+        .sort(),
+    ).toEqual([authority.id, shipping.id].sort());
+    expect(await members(session, shipping.id)).toContainEqual(
+      expect.objectContaining({
+        userId: officer.id,
+        name: 'Real Officer Name',
+        role: 'viewer',
+        status: 'active',
+      }),
+    );
+    expect(
+      (await invitations(session, shipping.id)).map((i) => i.email),
+    ).not.toContain(officer.email);
+  });
+
+  it('withdraws invitations (the link stops working) within the own organization only', async () => {
+    const org = await createOrganization('PT Batal Undang', 'research');
+    const other = await createOrganization('PT Lain Lagi', 'research');
+    const orgAdmin = await service.createUser({
+      email: service.email('withdrawer'),
+      memberships: [{ orgId: org.id, role: 'org_admin' }],
+    });
+    const outsider = await service.createUser({
+      email: service.email('outsider-admin'),
+      memberships: [{ orgId: other.id, role: 'org_admin' }],
+    });
+    const session = await service.login(orgAdmin.email, TEST_PASSWORD);
+    const outsiderSession = await service.login(outsider.email, TEST_PASSWORD);
+    const email = service.email('withdrawn');
+    const sequence = await service.lastEmailSequence();
+    const sent = await invite(session, org.id, {
+      email,
+      name: 'Withdrawn Person',
+      role: 'viewer',
+    });
+    const { id } = sent.json<InvitationBody>();
+    const message = await service.nextEmail(email, sequence);
+
+    const foreignList = await service.app.inject({
+      method: 'GET',
+      url: `/api/v2/organizations/${org.id}/invitations`,
+      headers: outsiderSession.headers,
+    });
+    expect(foreignList.statusCode).toBe(403);
+    const foreignCancel = await service.app.inject({
+      method: 'DELETE',
+      url: `/api/v2/organizations/${other.id}/invitations/${id}`,
+      headers: outsiderSession.headers,
+    });
+    expect(foreignCancel.statusCode).toBe(404);
+
+    const cancelled = await service.app.inject({
+      method: 'DELETE',
+      url: `/api/v2/organizations/${org.id}/invitations/${id}`,
+      headers: session.headers,
+    });
+    expect(cancelled.statusCode).toBe(204);
+    expect(await invitations(session, org.id)).toEqual([]);
+    const late = await service.app.inject({
+      method: 'POST',
+      url: '/api/v2/auth/password/reset',
+      payload: {
+        token: tokenOfLink(message.data.link),
+        password: 'TooLate2026x',
+      },
+    });
+    expect(late.statusCode).toBe(400);
+    expect(late.json()).toMatchObject({ code: 'INVALID_TOKEN' });
   });
 
   it('removing a member revokes their refresh sessions in that organization', async () => {

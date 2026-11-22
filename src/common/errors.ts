@@ -123,17 +123,41 @@ export const AuthErrors = {
       extra: { id },
     }),
 
-  emailTaken: (): ConflictError =>
-    new ConflictError('A user with this e-mail already exists', {
-      code: 'EMAIL_ALREADY_EXISTS',
-    }),
+  /** The caller may not grant these API-key scopes (`ais:ingest` is for super admins). */
+  scopeNotGrantable: (scopes: readonly string[]): ForbiddenError =>
+    new ForbiddenError(
+      `You may not grant the API-key scope(s) ${scopes.join(', ')}; only platform administrators can`,
+      {
+        code: 'SCOPE_NOT_GRANTABLE',
+        title: 'Scope not grantable',
+        extra: { scopes },
+      },
+    ),
 
-  memberExists: (orgId: string, userId?: string): ConflictError =>
-    new ConflictError('The user is already a member of the organization', {
+  memberExists: (orgId: string): ConflictError =>
+    new ConflictError('The address belongs to a member of the organization', {
       code: 'MEMBER_ALREADY_EXISTS',
       title: 'Member already exists',
-      extra: userId === undefined ? { orgId } : { orgId, userId },
+      extra: { orgId },
     }),
+
+  invitationNotFound: (orgId: string, id: string): NotFoundError =>
+    new NotFoundError(`No invitation with id ${id} in organization ${orgId}`, {
+      code: 'INVITATION_NOT_FOUND',
+      title: 'Invitation not found',
+      extra: { orgId, id },
+    }),
+
+  /** The same address was invited concurrently; repeating the request renews the invitation. */
+  invitationConflict: (orgId: string): ConflictError =>
+    new ConflictError(
+      'The address was invited at the same moment by another request; try again',
+      {
+        code: 'INVITATION_CONFLICT',
+        title: 'Invitation conflict',
+        extra: { orgId },
+      },
+    ),
 
   lastOrgAdmin: (orgId: string): ConflictError =>
     new ConflictError('An organization must keep at least one org_admin', {
@@ -170,7 +194,7 @@ export const AuthErrors = {
   /** A kind change would leave members with roles the new kind cannot grant. */
   kindStrandsRoles: (kind: string, roles: readonly string[]): ConflictError =>
     new ConflictError(
-      `Members hold roles an organization of kind ${kind} cannot grant (${roles.join(', ')}); change their roles first`,
+      `Members or pending invitations hold roles an organization of kind ${kind} cannot grant (${roles.join(', ')}); change those roles (or withdraw the invitations) first`,
       {
         code: 'ORGANIZATION_KIND_CONFLICT',
         title: 'Organization kind conflict',

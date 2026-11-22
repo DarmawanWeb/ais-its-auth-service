@@ -30,6 +30,32 @@ export class SigningKeysRepository {
     });
   }
 
+  /** Every key's sealed private key, locked for a re-seal (`pnpm rotate:key-secret`). */
+  async lockAllSealed(
+    tx: Executor,
+  ): Promise<{ kid: string; privateKeyEnc: string }[]> {
+    return tx
+      .select({
+        kid: signingKeys.kid,
+        privateKeyEnc: signingKeys.privateKeyEnc,
+      })
+      .from(signingKeys)
+      .orderBy(signingKeys.kid)
+      .for('update');
+  }
+
+  /** Stores a re-sealed private key. */
+  async replaceSealed(
+    kid: string,
+    privateKeyEnc: string,
+    tx: Executor,
+  ): Promise<void> {
+    await tx
+      .update(signingKeys)
+      .set({ privateKeyEnc })
+      .where(eq(signingKeys.kid, kid));
+  }
+
   /** Active and retiring keys (the JWKS), newest first. */
   async findPublished(): Promise<SigningKeyRow[]> {
     return this.db

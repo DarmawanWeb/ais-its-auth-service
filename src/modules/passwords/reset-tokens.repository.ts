@@ -1,6 +1,6 @@
 import { type Database, InjectDb } from '@darmawanweb/ais-its-nest/db';
 import { Injectable } from '@nestjs/common';
-import { and, eq, isNull, lt, sql } from 'drizzle-orm';
+import { and, eq, gt, isNull, lt, sql } from 'drizzle-orm';
 
 import type { Executor, PasswordResetTokenRow } from '../../db/database.js';
 import * as schema from '../../db/schema.js';
@@ -42,6 +42,25 @@ export class ResetTokensRepository {
           isNull(passwordResetTokens.usedAt),
         ),
       );
+  }
+
+  /** The unused, unexpired token of a hash (no lock: a cheap pre-check). */
+  async findOpenByHash(
+    tokenHash: string,
+    now: Date,
+  ): Promise<PasswordResetTokenRow | undefined> {
+    const [row] = await this.db
+      .select()
+      .from(passwordResetTokens)
+      .where(
+        and(
+          eq(passwordResetTokens.tokenHash, tokenHash),
+          isNull(passwordResetTokens.usedAt),
+          gt(passwordResetTokens.expiresAt, now),
+        ),
+      )
+      .limit(1);
+    return row;
   }
 
   /** Finds a token by hash and locks it until the end of the transaction. */

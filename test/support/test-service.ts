@@ -45,6 +45,7 @@ const TABLES = [
   'audit_logs',
   'api_keys',
   'password_reset_tokens',
+  'membership_invitations',
   'refresh_tokens',
   'sessions',
   'memberships',
@@ -237,16 +238,20 @@ export async function startTestService(
     lastEmailSequence,
     async nextEmail(to, afterSequence) {
       const { manager } = app.get(NatsClient);
+      // Scans every request published after `afterSequence` (several
+      // e-mails may follow each other); nothing consumes NOTIFY in tests.
       return waitFor(
         async () => {
-          const stored = await manager.streams.getMessage('NOTIFY', {
-            last_by_subj: NOTIFY_EMAIL_SUBJECT,
-          });
-          if (stored === null || stored.seq <= afterSequence) return undefined;
-          const parsed = parseEnvelope(stored.data);
-          if (!parsed.success) return undefined;
-          const data = parsed.envelope.data as EmailRequestedV1;
-          return data.to === to ? data : undefined;
+          const last = await lastEmailSequence();
+          for (let seq = afterSequence + 1; seq <= last; seq += 1) {
+            const stored = await manager.streams.getMessage('NOTIFY', { seq });
+            if (stored?.subject !== NOTIFY_EMAIL_SUBJECT) continue;
+            const parsed = parseEnvelope(stored.data);
+            if (!parsed.success) continue;
+            const data = parsed.envelope.data as EmailRequestedV1;
+            if (data.to === to) return data;
+          }
+          return undefined;
         },
         { timeoutMs: 10_000, message: `e-mail to ${to}` },
       );

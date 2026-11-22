@@ -126,3 +126,28 @@ export function openSecret(
     });
   }
 }
+
+/**
+ * Re-seals `sealed` under `currentKey` when it was sealed under
+ * `previousKey` (rotation of `KEY_ENCRYPTION_SECRET`), keeping its
+ * associated data. Idempotent: a value that `currentKey` already opens
+ * yields `undefined`.
+ *
+ * @throws {SecretDecryptionError} when neither key opens it (wrong secrets,
+ *   tampering, or another record's value).
+ */
+export function resealSecret(
+  currentKey: Buffer,
+  previousKey: Buffer,
+  sealed: string,
+  associatedData: string,
+): string | undefined {
+  try {
+    openSecret(currentKey, sealed, associatedData);
+    return undefined;
+  } catch (error) {
+    if (!(error instanceof SecretDecryptionError)) throw error;
+  }
+  const plaintext = openSecret(previousKey, sealed, associatedData);
+  return sealSecret(currentKey, plaintext, associatedData);
+}

@@ -1,7 +1,11 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { PG_POOL, type Pool } from '@darmawanweb/ais-its-nest/db';
+import { waitFor } from '@darmawanweb/ais-its-nest/testing';
+import pg from 'pg';
+import { afterAll, beforeAll, describe, expect, inject, it, vi } from 'vitest';
 
+import { PasswordHasher } from '../src/modules/crypto/password-hasher.service.js';
 import {
   startTestService,
   TEST_PASSWORD,
@@ -89,6 +93,103 @@ describe('forgotten passwords, resets and password changes', () => {
     await expect(
       service.login(user.email, 'BrandNewSecret7'),
     ).resolves.toBeDefined();
+  });
+
+  it('checks the link before hashing anything and throttles failed resets per IP', async () => {
+    const hash = vi.spyOn(service.app.get(PasswordHasher), 'hash');
+    const reset = (token: string) =>
+      service.app.inject({
+        method: 'POST',
+        url: '/api/v2/auth/password/reset',
+        headers: { 'x-forwarded-for': '203.0.113.90' },
+        payload: { token, password: 'Garbage1Password9' },
+      });
+    try {
+      // Malformed, then well-formed but unknown: 10 failures allowed per window.
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        const token =
+          attempt % 2 === 0 ? 'x' : 'A'.repeat(42) + String(attempt);
+        const response = await reset(token);
+        expect(response.statusCode).toBe(400);
+        expect(response.json()).toMatchObject({ code: 'INVALID_TOKEN' });
+      }
+      const blocked = await reset('x');
+      expect(blocked.statusCode).toBe(429);
+      expect(blocked.json()).toMatchObject({ code: 'RATE_LIMITED' });
+      expect(blocked.headers['retry-after']).toBeDefined();
+      expect(hash).not.toHaveBeenCalled();
+    } finally {
+      hash.mockRestore();
+    }
+    // Other clients are not affected.
+    const elsewhere = await service.app.inject({
+      method: 'POST',
+      url: '/api/v2/auth/password/reset',
+      headers: { 'x-forwarded-for': '203.0.113.91' },
+      payload: { token: 'x', password: 'Garbage1Password9' },
+    });
+    expect(elsewhere.statusCode).toBe(400);
+  });
+
+  it('never re-enables an account that is disabled while its reset runs', async () => {
+    const user = await service.createUser({
+      email: service.email('contained'),
+    });
+    const sequence = await service.lastEmailSequence();
+    expect((await forgot(user.email, '203.0.113.92')).statusCode).toBe(202);
+    const token = tokenOfLink(
+      (await service.nextEmail(user.email, sequence)).data.link,
+    );
+    const pool = service.app.get<unknown, Pool>(PG_POOL);
+
+    // A second connection runs the writes of PATCH /users/:id {status: 'disabled'}
+    // and holds the row lock while the reset arrives.
+    const blocker = new pg.Client({
+      connectionString: inject('infra').databaseUrl,
+    });
+    await blocker.connect();
+    let response;
+    try {
+      await blocker.query('BEGIN');
+      await blocker.query(
+        "UPDATE auth.users SET status = 'disabled', updated_at = now() WHERE id = $1",
+        [user.id],
+      );
+      await blocker.query(
+        'UPDATE auth.sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL',
+        [user.id],
+      );
+      const pending = service.app
+        .inject({
+          method: 'POST',
+          url: '/api/v2/auth/password/reset',
+          payload: { token, password: 'Takeover2026x' },
+        })
+        .then((reply) => reply);
+      await waitFor(
+        async () => {
+          const waiting = await pool.query<{ n: number }>(
+            "SELECT count(*)::int AS n FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query ILIKE '%for update%'",
+          );
+          return (waiting.rows[0]?.n ?? 0) > 0 ? true : undefined;
+        },
+        { timeoutMs: 10_000, message: 'the reset waiting for the user row' },
+      );
+      await blocker.query('COMMIT');
+      response = await pending;
+    } finally {
+      await blocker.end();
+    }
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({ code: 'ACCOUNT_DISABLED' });
+    const stored = await pool.query<{ status: string }>(
+      'SELECT status FROM users WHERE id = $1',
+      [user.id],
+    );
+    expect(stored.rows[0]?.status).toBe('disabled');
+    await expect(service.login(user.email, 'Takeover2026x')).rejects.toThrow(
+      /401/,
+    );
   });
 
   it('answers 202 for unknown addresses without sending anything', async () => {

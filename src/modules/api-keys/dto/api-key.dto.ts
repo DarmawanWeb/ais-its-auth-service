@@ -103,6 +103,8 @@ export class CreateApiKeyDto {
     isArray: true,
     minItems: 1,
     uniqueItems: true,
+    description:
+      'ais:ingest (writes the AIS feed shared by every tenant) is granted by super admins only (403 SCOPE_NOT_GRANTABLE otherwise); org_admins grant telemetry:ingest and ais:read',
   })
   @IsArray()
   @ArrayMinSize(1)

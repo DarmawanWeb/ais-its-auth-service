@@ -121,7 +121,9 @@ export class UsersService {
     const actor = requireUser(principal);
     if (actor.id === id) throw AuthErrors.ownStatus();
     const updated = await this.db.transaction(async (tx) => {
-      const user = await this.users.findById(id, tx);
+      // Row lock: a reset or invitation acceptance running at the same time
+      // waits for this change (and then sees the new status) or precedes it.
+      const user = await this.users.lockById(id, tx);
       if (user === undefined) throw AuthErrors.userNotFound(id);
       if (user.status === status) return { user, from: user.status };
       if (
