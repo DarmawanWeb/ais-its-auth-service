@@ -21,6 +21,7 @@ import {
   formatDemoSeed,
 } from './modules/bootstrap/demo-seeder.js';
 import { PasswordHasher } from './modules/crypto/password-hasher.service.js';
+import { MIGRATIONS_DIR } from './service.js';
 
 // `pnpm seed:demo` (spec §13.1): applies the migrations, then creates the demo
 // organizations, one user per role and two API keys, audits them and prints
@@ -47,7 +48,7 @@ async function seed(): Promise<void> {
     await runMigrations({
       pool,
       schema: config.DATABASE_SCHEMA,
-      dir: new URL('../migrations', import.meta.url).pathname,
+      dir: MIGRATIONS_DIR,
       logger: {
         info: (message) => {
           logger.info(message);

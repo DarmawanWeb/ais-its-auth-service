@@ -4,7 +4,11 @@ import {
   type Principal,
   RequirePermissions,
 } from '@darmawanweb/ais-its-nest/auth';
-import { ApiPageResponse, PageQueryDto } from '@darmawanweb/ais-its-nest/http';
+import {
+  ApiPageResponse,
+  PageQueryDto,
+  UuidParam,
+} from '@darmawanweb/ais-its-nest/http';
 import {
   Body,
   Controller,
@@ -12,8 +16,6 @@ import {
   Get,
   HttpCode,
   HttpStatus,
-  Param,
-  ParseUUIDPipe,
   Patch,
   Post,
   Query,
@@ -23,9 +25,11 @@ import {
   ApiConflictResponse,
   ApiCreatedResponse,
   ApiNoContentResponse,
+  ApiNotFoundResponse,
   ApiOkResponse,
   ApiOperation,
   ApiTags,
+  ApiTooManyRequestsResponse,
   ApiUnprocessableEntityResponse,
 } from '@nestjs/swagger';
 import type { FastifyRequest } from 'fastify';
@@ -37,6 +41,10 @@ import {
   ListOrganizationsQuery,
   MemberDto,
   OrganizationDto,
+  OrganizationListItemDto,
+  OrganizationStatsDto,
+  OrganizationStatsQuery,
+  ResendInvitationDto,
   SentInvitationDto,
   UpdateMemberDto,
   UpdateOrganizationDto,
@@ -52,20 +60,39 @@ export class OrganizationsController {
 
   @Get()
   @RequirePermissions('org:manage')
-  @ApiOperation({ summary: 'List organizations (super admins)' })
-  @ApiPageResponse(OrganizationDto)
+  @ApiOperation({
+    summary:
+      'List organizations with their member and API key counts (super admins)',
+  })
+  @ApiPageResponse(OrganizationListItemDto)
   async list(
     @Query() query: ListOrganizationsQuery,
-  ): Promise<Paginated<OrganizationDto>> {
+  ): Promise<Paginated<OrganizationListItemDto>> {
     const { page, pageSize, search, kind } = query;
     const result = await this.organizations.list(
       { search, kind },
       { page, pageSize },
     );
     return {
-      data: result.data.map((row) => new OrganizationDto(row)),
+      data: result.data.map((row) => new OrganizationListItemDto(row)),
       meta: result.meta,
     };
+  }
+
+  @Get('stats')
+  @RequirePermissions('org:manage')
+  @ApiOperation({
+    summary: 'Organizations per kind over every page (super admins)',
+    description:
+      'The counts of the GET /organizations header: total and per kind (every kind listed, 0 included), optionally of the organizations matching search.',
+  })
+  @ApiOkResponse({ type: OrganizationStatsDto })
+  async stats(
+    @Query() query: OrganizationStatsQuery,
+  ): Promise<OrganizationStatsDto> {
+    return new OrganizationStatsDto(
+      await this.organizations.stats({ search: query.search }),
+    );
   }
 
   @Post()
@@ -89,7 +116,7 @@ export class OrganizationsController {
   })
   @ApiOkResponse({ type: OrganizationDto })
   async get(
-    @Param('id', new ParseUUIDPipe()) id: string,
+    @UuidParam() id: string,
     @CurrentPrincipal() principal: Principal,
   ): Promise<OrganizationDto> {
     return new OrganizationDto(await this.organizations.get(id, principal));
@@ -102,7 +129,7 @@ export class OrganizationsController {
   })
   @ApiOkResponse({ type: OrganizationDto })
   async update(
-    @Param('id', new ParseUUIDPipe()) id: string,
+    @UuidParam() id: string,
     @Body() body: UpdateOrganizationDto,
     @CurrentPrincipal() principal: Principal,
     @Req() request: FastifyRequest,
@@ -121,7 +148,7 @@ export class OrganizationsController {
   })
   @ApiNoContentResponse()
   async remove(
-    @Param('id', new ParseUUIDPipe()) id: string,
+    @UuidParam() id: string,
     @CurrentPrincipal() principal: Principal,
     @Req() request: FastifyRequest,
   ): Promise<void> {
@@ -140,7 +167,7 @@ export class MembersController {
   @ApiOperation({ summary: 'List the members of an organization' })
   @ApiPageResponse(MemberDto)
   async list(
-    @Param('id', new ParseUUIDPipe()) orgId: string,
+    @UuidParam() orgId: string,
     @Query() query: PageQueryDto,
     @CurrentPrincipal() principal: Principal,
   ): Promise<Paginated<MemberDto>> {
@@ -164,7 +191,7 @@ export class MembersController {
   })
   @ApiUnprocessableEntityResponse({ description: 'ROLE_NOT_GRANTABLE' })
   async invite(
-    @Param('id', new ParseUUIDPipe()) orgId: string,
+    @UuidParam() orgId: string,
     @Body() body: InviteMemberDto,
     @CurrentPrincipal() principal: Principal,
     @Req() request: FastifyRequest,
@@ -180,8 +207,8 @@ export class MembersController {
   })
   @ApiOkResponse({ type: MemberDto })
   async update(
-    @Param('id', new ParseUUIDPipe()) orgId: string,
-    @Param('userId', new ParseUUIDPipe()) userId: string,
+    @UuidParam() orgId: string,
+    @UuidParam('userId') userId: string,
     @Body() body: UpdateMemberDto,
     @CurrentPrincipal() principal: Principal,
     @Req() request: FastifyRequest,
@@ -206,8 +233,8 @@ export class MembersController {
   })
   @ApiNoContentResponse()
   async remove(
-    @Param('id', new ParseUUIDPipe()) orgId: string,
-    @Param('userId', new ParseUUIDPipe()) userId: string,
+    @UuidParam() orgId: string,
+    @UuidParam('userId') userId: string,
     @CurrentPrincipal() principal: Principal,
     @Req() request: FastifyRequest,
   ): Promise<void> {
@@ -228,7 +255,7 @@ export class InvitationsController {
   })
   @ApiPageResponse(InvitationDto)
   async list(
-    @Param('id', new ParseUUIDPipe()) orgId: string,
+    @UuidParam() orgId: string,
     @Query() query: PageQueryDto,
     @CurrentPrincipal() principal: Principal,
   ): Promise<Paginated<InvitationDto>> {
@@ -240,14 +267,47 @@ export class InvitationsController {
     };
   }
 
+  @Post(':invitationId/resend')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('user:manage')
+  @ApiOperation({
+    summary: 'Send an invitation again with a new link',
+    description:
+      'Renews a pending or expired invitation: a new link valid INVITE_TTL_HOURS replaces the previous one (which stops ' +
+      'working), role and name stay, the sender becomes the inviter. The role is checked again against the kind of the ' +
+      'organization. At most 3 resends per invitation and hour (429 RATE_LIMITED with Retry-After beyond).',
+  })
+  @ApiOkResponse({ type: SentInvitationDto })
+  @ApiNotFoundResponse({
+    description: 'INVITATION_NOT_FOUND (also once accepted or withdrawn)',
+  })
+  @ApiUnprocessableEntityResponse({ description: 'ROLE_NOT_GRANTABLE' })
+  @ApiTooManyRequestsResponse({ description: 'RATE_LIMITED (Retry-After)' })
+  async resend(
+    @UuidParam() orgId: string,
+    @UuidParam('invitationId') invitationId: string,
+    @Body() body: ResendInvitationDto,
+    @CurrentPrincipal() principal: Principal,
+    @Req() request: FastifyRequest,
+  ): Promise<SentInvitationDto> {
+    const sent = await this.members.resendInvitation(
+      orgId,
+      invitationId,
+      body.locale,
+      principal,
+      request,
+    );
+    return new SentInvitationDto(sent.record, sent.invitationSent);
+  }
+
   @Delete(':invitationId')
   @HttpCode(HttpStatus.NO_CONTENT)
   @RequirePermissions('user:manage')
   @ApiOperation({ summary: 'Withdraw an invitation (its link stops working)' })
   @ApiNoContentResponse()
   async cancel(
-    @Param('id', new ParseUUIDPipe()) orgId: string,
-    @Param('invitationId', new ParseUUIDPipe()) invitationId: string,
+    @UuidParam() orgId: string,
+    @UuidParam('invitationId') invitationId: string,
     @CurrentPrincipal() principal: Principal,
     @Req() request: FastifyRequest,
   ): Promise<void> {

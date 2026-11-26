@@ -218,6 +218,13 @@ export const apiKeys = serviceSchema.table(
     lastUsedAt: timestamp('last_used_at'),
     revokedAt: timestamp('revoked_at'),
     createdAt: createdAt(),
+    /** Inactive from this time on (`0004_api_key_expiry_rotation.sql`); `null` = no expiry. */
+    expiresAt: timestamp('expires_at'),
+    /** Last secret rotation. */
+    rotatedAt: timestamp('rotated_at'),
+    /** SHA-256 (hex) of the replaced key, accepted until {@link previousKeyExpiresAt}. */
+    previousKeyHash: pg.text('previous_key_hash'),
+    previousKeyExpiresAt: timestamp('previous_key_expires_at'),
   },
   (table) => [
     pg.unique('api_keys_prefix_key').on(table.prefix),
@@ -283,6 +290,11 @@ export const auditLogs = serviceSchema.table(
       .notNull()
       .default({}),
     recordedAt: timestamp('recorded_at').notNull().defaultNow(),
+    /** Names captured when the record was stored (`0003_audit_log_labels.sql`). */
+    actorName: pg.text('actor_name'),
+    actorEmail: pg.text('actor_email'),
+    orgName: pg.text('org_name'),
+    targetLabel: pg.text('target_label'),
   },
   (table) => [
     pg.primaryKey({ columns: [table.at, table.id] }),

@@ -1,8 +1,12 @@
+import { sanitizeError } from '@darmawanweb/ais-its-nest/db';
 import type { Logger } from '@nestjs/common';
+
+import { failureMessage } from './background-work.js';
 
 /**
  * A background job run every `intervalMs` (key retirement, housekeeping):
- * runs never overlap, failures are logged and retried at the next tick, and
+ * runs never overlap, failures are logged (sanitized: a database error never
+ * shows the values its statement bound) and retried at the next tick, and
  * the timer never keeps the process alive. Start it in
  * `onApplicationBootstrap` and stop it in `beforeApplicationShutdown`.
  */
@@ -38,7 +42,8 @@ export class PeriodicTask {
     this.running ??= this.work()
       .catch((error: unknown) => {
         this.logger.warn(
-          `${this.name} failed: ${error instanceof Error ? error.message : String(error)}`,
+          { err: sanitizeError(error) },
+          `${this.name} failed: ${failureMessage(error)}`,
         );
       })
       .finally(() => {

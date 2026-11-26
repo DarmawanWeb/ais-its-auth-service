@@ -5,7 +5,11 @@ import {
   type Principal,
   Public,
 } from '@darmawanweb/ais-its-nest/auth';
-import { ApiPageResponse, PageQueryDto } from '@darmawanweb/ais-its-nest/http';
+import {
+  ApiPageResponse,
+  PageQueryDto,
+  UuidParam,
+} from '@darmawanweb/ais-its-nest/http';
 import {
   Body,
   Controller,
@@ -14,8 +18,6 @@ import {
   Header,
   HttpCode,
   HttpStatus,
-  Param,
-  ParseUUIDPipe,
   Post,
   Query,
   Req,
@@ -23,6 +25,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import {
+  ApiCookieAuth,
   ApiExtraModels,
   ApiForbiddenResponse,
   ApiNoContentResponse,
@@ -39,6 +42,7 @@ import {
   REFRESH_COOKIE_NAME,
   refreshFailureEndsSession,
 } from '../../domain/refresh-cookie.js';
+import { REFRESH_COOKIE_SCHEME } from '../../openapi.options.js';
 import { MfaService } from '../mfa/mfa.service.js';
 import { AccountSessionsService } from '../sessions/account-sessions.service.js';
 import { SessionService } from '../sessions/session.service.js';
@@ -64,14 +68,13 @@ import { ForwardAuthService } from './forward-auth.service.js';
 import { RefreshCookieJar } from './refresh-cookie.js';
 
 /**
- * How the cookie endpoints read the session, in their operation description:
- * the kit's OpenAPI options cannot declare a cookie security scheme, and an
- * undeclared `security` name makes the document invalid (OpenAPI 3).
+ * What the cookie endpoints add to their security scheme
+ * (`refreshCookie`, declared in `openapi.options.ts`).
  */
 const REFRESH_COOKIE_DESCRIPTION =
-  `Reads the refresh token from the HttpOnly cookie ${REFRESH_COOKIE_NAME} ` +
-  '(Path=/api/v2/auth, SameSite=Strict; set by login, MFA verify and refresh). ' +
-  'Browsers send it automatically; an Origin header, when present, must be one of CORS_ORIGINS or PUBLIC_BASE_URL.';
+  `Reads the refresh token from the HttpOnly cookie ${REFRESH_COOKIE_NAME} (set by login, MFA verify and refresh; ` +
+  'browsers send it automatically). An Origin header, when present, must be one of CORS_ORIGINS or PUBLIC_BASE_URL ' +
+  '(403 ORIGIN_NOT_ALLOWED).';
 
 /**
  * Sign-in, sessions and tokens: `/api/v2/auth` (spec §13.1). The refresh
@@ -144,6 +147,7 @@ export class AuthController {
 
   @Post('refresh')
   @Public()
+  @ApiCookieAuth(REFRESH_COOKIE_SCHEME)
   @UseGuards(CookieOriginGuard)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
@@ -177,6 +181,7 @@ export class AuthController {
 
   @Post('logout')
   @Public()
+  @ApiCookieAuth(REFRESH_COOKIE_SCHEME)
   @UseGuards(CookieOriginGuard)
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({
@@ -272,7 +277,7 @@ export class SessionsController {
   })
   @ApiNoContentResponse()
   async revoke(
-    @Param('id', new ParseUUIDPipe()) id: string,
+    @UuidParam() id: string,
     @CurrentPrincipal() principal: Principal,
     @Req() request: FastifyRequest,
   ): Promise<void> {

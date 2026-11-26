@@ -13,5 +13,6 @@ import { ApiKeysService } from './api-keys.service.js';
   imports: [AccountsModule],
   controllers: [ApiKeysController, InternalApiKeysController],
   providers: [ApiKeysRepository, ApiKeysService],
+  exports: [ApiKeysRepository],
 })
 export class ApiKeysModule {}

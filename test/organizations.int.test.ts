@@ -11,6 +11,9 @@ import {
   WEB_ORIGIN,
 } from './support/test-service.js';
 
+/** A random UUID (an id that exists nowhere). */
+const newIdLike = (): string => crypto.randomUUID();
+
 interface MemberBody {
   userId: string;
   email: string;
@@ -25,6 +28,7 @@ interface InvitationBody {
   name: string;
   role: string;
   invitedBy: string | null;
+  invitedByName: string | null;
   createdAt: string;
   expiresAt: string;
   expired: boolean;
@@ -40,6 +44,7 @@ const INVITATION_FIELDS = [
   'id',
   'invitationSent',
   'invitedBy',
+  'invitedByName',
   'name',
   'role',
 ];
@@ -621,5 +626,255 @@ describe('organizations, invitations and members', () => {
       headers: session.headers,
     });
     expect(denied.statusCode).toBe(403);
+  });
+  it('sends an invitation again with a new link (the old one stops working)', async () => {
+    const org = await createOrganization('PT Kirim Ulang', 'research');
+    const other = await createOrganization('PT Kirim Lain', 'research');
+    const orgAdmin = await service.createUser({
+      email: service.email('resender'),
+      name: 'Resending Admin',
+      memberships: [{ orgId: org.id, role: 'org_admin' }],
+    });
+    const outsider = await service.createUser({
+      email: service.email('resend-outsider'),
+      memberships: [{ orgId: other.id, role: 'org_admin' }],
+    });
+    const session = await service.login(orgAdmin.email, TEST_PASSWORD);
+    const email = service.email('resent');
+    const firstSequence = await service.lastEmailSequence();
+    const sent = await invite(admin, org.id, {
+      email,
+      name: 'Resent Person',
+      role: 'fleet_manager',
+    });
+    expect(sent.statusCode).toBe(201);
+    const invitation = sent.json<InvitationBody>();
+    const firstMail = await service.nextEmail(email, firstSequence);
+
+    const resendUrl = `/api/v2/organizations/${org.id}/invitations/${invitation.id}/resend`;
+    const secondSequence = await service.lastEmailSequence();
+    const resent = await service.app.inject({
+      method: 'POST',
+      url: resendUrl,
+      headers: { ...session.headers, 'content-type': 'application/json' },
+    });
+    expect(resent.statusCode).toBe(200);
+    expect(Object.keys(resent.json()).sort()).toEqual(INVITATION_FIELDS);
+    expect(resent.json()).toMatchObject({
+      id: invitation.id,
+      email,
+      name: 'Resent Person',
+      role: 'fleet_manager',
+      invitedBy: orgAdmin.id,
+      invitedByName: 'Resending Admin',
+      invitationSent: true,
+    });
+    expect(
+      Date.parse(resent.json<InvitationBody>().expiresAt),
+    ).toBeGreaterThanOrEqual(Date.parse(invitation.expiresAt));
+    const secondMail = await service.nextEmail(email, secondSequence);
+    expect(tokenOfLink(secondMail.data.link)).not.toBe(
+      tokenOfLink(firstMail.data.link),
+    );
+    expect((await invitations(session, org.id))[0]).toMatchObject({
+      id: invitation.id,
+      invitedByName: 'Resending Admin',
+    });
+    const stale = await service.app.inject({
+      method: 'POST',
+      url: '/api/v2/auth/password/reset',
+      payload: {
+        token: tokenOfLink(firstMail.data.link),
+        password: 'OldLink2026x',
+      },
+    });
+    expect(stale.statusCode).toBe(400);
+
+    const outsiderSession = await service.login(outsider.email, TEST_PASSWORD);
+    expect(
+      (
+        await service.app.inject({
+          method: 'POST',
+          url: resendUrl,
+          headers: outsiderSession.headers,
+          payload: {},
+        })
+      ).statusCode,
+    ).toBe(403);
+    // Three resends per invitation and hour: the third passes, the fourth is throttled.
+    for (const expected of [200, 200, 429]) {
+      const response = await service.app.inject({
+        method: 'POST',
+        url: resendUrl,
+        headers: session.headers,
+        payload: { locale: 'en' },
+      });
+      expect(response.statusCode).toBe(expected);
+      if (expected === 429) {
+        expect(response.json()).toMatchObject({ code: 'RATE_LIMITED' });
+        expect(response.headers['retry-after']).toBeDefined();
+      }
+    }
+
+    const accepted = await accept(
+      email,
+      (await service.lastEmailSequence()) - 1,
+      'Accepted2026x',
+    );
+    expect(accepted.statusCode).toBe(204);
+    const gone = await service.app.inject({
+      method: 'POST',
+      url: `/api/v2/organizations/${org.id}/invitations/${newIdLike()}/resend`,
+      headers: admin.headers,
+      payload: {},
+    });
+    expect(gone.statusCode).toBe(404);
+    expect(gone.json()).toMatchObject({ code: 'INVITATION_NOT_FOUND' });
+  });
+
+  it('lists organizations with member and API key counts, and counts them per kind', async () => {
+    const org = await createOrganization(
+      'PT Hitung Anggota',
+      'shipping_company',
+    );
+    for (const role of ['org_admin', 'viewer'] as const) {
+      await service.createUser({ memberships: [{ orgId: org.id, role }] });
+    }
+    for (const name of ['Active key', 'Revoked key']) {
+      const created = await service.app.inject({
+        method: 'POST',
+        url: '/api/v2/api-keys',
+        headers: admin.headers,
+        payload: { name, scopes: ['ais:read'], orgId: org.id },
+      });
+      expect(created.statusCode, created.body).toBe(201);
+      if (name === 'Revoked key') {
+        await service.app.inject({
+          method: 'DELETE',
+          url: `/api/v2/api-keys/${created.json<{ apiKey: { id: string } }>().apiKey.id}`,
+          headers: admin.headers,
+        });
+      }
+    }
+    const listed = await listOf<{
+      id: string;
+      memberCount: number;
+      apiKeyCount: number;
+    }>(admin, '/api/v2/organizations?search=Hitung');
+    expect(listed).toEqual([
+      expect.objectContaining({ id: org.id, memberCount: 2, apiKeyCount: 1 }),
+    ]);
+
+    const response = await service.app.inject({
+      method: 'GET',
+      url: '/api/v2/organizations/stats',
+      headers: admin.headers,
+    });
+    expect(response.statusCode).toBe(200);
+    const stats = response.json<{
+      total: number;
+      byKind: Record<string, number>;
+    }>();
+    const all = await service.app.inject({
+      method: 'GET',
+      url: '/api/v2/organizations?pageSize=1',
+      headers: admin.headers,
+    });
+    expect(stats.total).toBe(
+      all.json<{ meta: { total: number } }>().meta.total,
+    );
+    expect(Object.keys(stats.byKind).sort()).toEqual([
+      'authority',
+      'platform',
+      'research',
+      'shipping_company',
+    ]);
+    expect(stats.byKind.platform).toBe(1);
+    expect(Object.values(stats.byKind).reduce((a, b) => a + b, 0)).toBe(
+      stats.total,
+    );
+    const searched = await service.app.inject({
+      method: 'GET',
+      url: '/api/v2/organizations/stats?search=Hitung',
+      headers: admin.headers,
+    });
+    expect(searched.json()).toEqual({
+      total: 1,
+      byKind: { shipping_company: 1, authority: 0, platform: 0, research: 0 },
+    });
+    const member = await service.createUser({
+      memberships: [{ orgId: org.id, role: 'org_admin' }],
+    });
+    const memberSession = await service.login(member.email, TEST_PASSWORD);
+    expect(
+      (
+        await service.app.inject({
+          method: 'GET',
+          url: '/api/v2/organizations/stats',
+          headers: memberSession.headers,
+        })
+      ).statusCode,
+    ).toBe(403);
+  });
+
+  it('looks up directory users by ids and by organization (super admins)', async () => {
+    const org = await createOrganization('PT Direktori', 'research');
+    const first = await service.createUser({
+      memberships: [{ orgId: org.id, role: 'viewer' }],
+    });
+    const second = await service.createUser({});
+    const byIds = await listOf<{ id: string }>(
+      admin,
+      `/api/v2/users?ids=${first.id},${second.id},${newIdLike()}&pageSize=100`,
+    );
+    expect(byIds.map((user) => user.id).sort()).toEqual(
+      [first.id, second.id].sort(),
+    );
+    const byOrg = await listOf<{ id: string }>(
+      admin,
+      `/api/v2/users?orgId=${org.id}`,
+    );
+    expect(byOrg.map((user) => user.id)).toEqual([first.id]);
+    for (const query of [
+      'ids=not-a-uuid',
+      `ids=${Array.from({ length: 101 }, () => first.id).join(',')}`,
+      'orgId=nope',
+    ]) {
+      const response = await service.app.inject({
+        method: 'GET',
+        url: `/api/v2/users?${query}`,
+        headers: admin.headers,
+      });
+      expect(response.statusCode).toBe(400);
+    }
+  });
+
+  it('refuses null for fields an organization update cannot clear', async () => {
+    const org = await createOrganization('PT Tanpa Null', 'research');
+    for (const field of ['name', 'slug', 'kind']) {
+      const response = await service.app.inject({
+        method: 'PATCH',
+        url: `/api/v2/organizations/${org.id}`,
+        headers: admin.headers,
+        payload: { [field]: null },
+      });
+      expect(response.statusCode).toBe(400);
+      const body = response.json<{
+        code: string;
+        errors: { field: string }[];
+      }>();
+      expect(body.code).toBe('VALIDATION_FAILED');
+      expect(body.errors.map((error) => error.field)).toContain(field);
+    }
+    const malformed = await service.app.inject({
+      method: 'GET',
+      url: '/api/v2/organizations/not-a-uuid',
+      headers: admin.headers,
+    });
+    expect(malformed.statusCode).toBe(400);
+    expect(malformed.json()).toMatchObject({
+      code: 'VALIDATION_FAILED',
+      errors: [expect.objectContaining({ field: 'id' })],
+    });
   });
 });

@@ -1,8 +1,12 @@
-import type { Database } from '@darmawanweb/ais-its-nest/db';
+import {
+  type Database,
+  databaseErrorInfo,
+  sanitizeError,
+  sqlStateOf,
+} from '@darmawanweb/ais-its-nest/db';
 import { DrizzleQueryError } from 'drizzle-orm/errors';
 import { describe, expect, it } from 'vitest';
 
-import { SanitizedDatabaseError } from '../../db/errors.js';
 import type * as schema from '../../db/schema.js';
 import { UsersRepository } from './users.repository.js';
 
@@ -37,20 +41,18 @@ function failingDatabase(): Database<typeof schema> {
   return chain as unknown as Database<typeof schema>;
 }
 
-describe('UsersRepository writes (no password hash in errors)', () => {
+/**
+ * The repository no longer wraps its writes (0.2.0): drizzle's error reaches
+ * the kit, whose `sanitizeError` is what its problem-details filter, logger
+ * and DLQ headers use. These cases pin that the secrets a write binds never
+ * survive it.
+ */
+describe('UsersRepository writes (no password hash in sanitized errors)', () => {
   const repository = new UsersRepository(failingDatabase());
 
   it.each([
-    [
-      'setPassword',
-      () => repository.setPassword('id', HASH, 'active'),
-      'Storing the password failed',
-    ],
-    [
-      'rehashPassword',
-      () => repository.rehashPassword('id', 'old', HASH),
-      'Rehashing the password failed',
-    ],
+    ['setPassword', () => repository.setPassword('id', HASH, 'active')],
+    ['rehashPassword', () => repository.rehashPassword('id', 'old', HASH)],
     [
       'insert',
       () =>
@@ -62,21 +64,31 @@ describe('UsersRepository writes (no password hash in errors)', () => {
           status: 'active',
           isPlatformAdmin: false,
         }),
-      'Creating the user failed',
     ],
     [
       'setMfa',
-      () => repository.setMfa('id', { secretEnc: 'v1.x.y.z', enabled: true }),
-      'Storing the MFA secret failed',
+      () => repository.setMfa('id', { secretEnc: HASH, enabled: true }),
     ],
-  ])('%s rethrows a sanitized error', async (_name, write, message) => {
+  ])('%s: the kit sanitizes the failure', async (_name, write) => {
     const error: unknown = await write().then(
       () => undefined,
       (reason: unknown) => reason,
     );
-    expect(error).toBeInstanceOf(SanitizedDatabaseError);
-    expect((error as Error).message).toContain(message);
-    expect(JSON.stringify(error)).not.toContain('argon2');
-    expect((error as Error).message).not.toContain('argon2');
+    // The raw error carries the hash (the reason the kit sanitizes) …
+    expect(error).toBeInstanceOf(DrizzleQueryError);
+    expect(JSON.stringify((error as DrizzleQueryError).params)).toContain(
+      'argon2',
+    );
+    // … what is logged and answered does not, and keeps the SQLSTATE.
+    const sanitized = sanitizeError(error) as Error;
+    expect(sanitized.message).toBe(
+      'canceling statement due to statement timeout',
+    );
+    expect(sqlStateOf(sanitized)).toBe('57014');
+    expect(JSON.stringify(databaseErrorInfo(error))).not.toContain('argon2');
+    expect(`${sanitized.message}${sanitized.stack ?? ''}`).not.toContain(
+      'argon2',
+    );
+    expect(JSON.stringify(sanitized)).not.toContain('argon2');
   });
 });

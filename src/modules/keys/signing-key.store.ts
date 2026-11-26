@@ -1,5 +1,6 @@
 import { ServiceUnavailableError } from '@darmawanweb/ais-its-nest';
 import type { AccessTokenKeyResolver } from '@darmawanweb/ais-its-nest/auth';
+import { sanitizeError } from '@darmawanweb/ais-its-nest/db';
 import {
   Injectable,
   Logger,
@@ -7,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { type CryptoKey, errors as joseErrors, type JWK } from 'jose';
 
+import { failureMessage } from '../../common/background-work.js';
 import type { SigningKeyRow } from '../../db/database.js';
 import { KEY_CACHE_REFRESH_MS } from '../../domain/signing-key-rules.js';
 import { KeyEncryption } from '../crypto/key-encryption.service.js';
@@ -202,7 +204,8 @@ export class SigningKeyStore implements OnApplicationBootstrap {
         });
       }
       this.logger.warn(
-        `Reloading the signing keys failed, using the cached keys: ${error instanceof Error ? error.message : String(error)}`,
+        { err: sanitizeError(error) },
+        `Reloading the signing keys failed, using the cached keys: ${failureMessage(error)}`,
       );
       return state;
     }

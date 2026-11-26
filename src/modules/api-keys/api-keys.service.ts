@@ -17,21 +17,26 @@ import {
   AuditService,
 } from '@darmawanweb/ais-its-nest/audit';
 import type { Principal } from '@darmawanweb/ais-its-nest/auth';
-import { MetricsService } from '@darmawanweb/ais-its-nest/metrics';
+import { type Database, InjectDb } from '@darmawanweb/ais-its-nest/db';
+import {
+  type Counter,
+  MetricsService,
+} from '@darmawanweb/ais-its-nest/metrics';
 import { Injectable } from '@nestjs/common';
 
 import { AuthErrors } from '../../common/errors.js';
-import type { CounterMetric } from '../../common/metrics.js';
 import { requireUser } from '../../common/principals.js';
 import type { ApiKeyRow } from '../../db/database.js';
+import type * as schema from '../../db/schema.js';
 import {
   canManageApiKeys,
   ungrantableScopes,
 } from '../../domain/access-rules.js';
 import {
-  apiKeyMatches,
-  generateApiKey,
-} from '../../domain/api-key-material.js';
+  apiKeyStatus,
+  rotationGraceEnd,
+} from '../../domain/api-key-lifecycle.js';
+import { generateApiKey, matchApiKey } from '../../domain/api-key-material.js';
 import { OrganizationsRepository } from '../accounts/organizations.repository.js';
 import {
   type ApiKeyScopeFilter,
@@ -44,6 +49,14 @@ export interface CreateApiKeyInput {
   readonly scopes: readonly ApiKeyScope[];
   /** Super admins only; others create keys in their active organization. */
   readonly orgId?: string | undefined;
+  /** Inactive from then on (must lie in the future); absent = no expiry. */
+  readonly expiresAt?: Date | undefined;
+}
+
+/** `POST /api-keys/:id/rotate`. */
+export interface RotateApiKeyInput {
+  /** Minutes the replaced secret keeps working (0 = stops at once). */
+  readonly gracePeriodMin: number;
 }
 
 /** A created key with its secret (shown once). */
@@ -57,13 +70,16 @@ export interface CreatedApiKey {
  * of the key's organization and by super admins (`api_key:manage`); the
  * platform-wide write scope `ais:ingest` is granted by super admins only;
  * stored as SHA-256 with a unique lookup prefix; introspected by the other
- * services (`/internal/api-keys/introspect`).
+ * services (`/internal/api-keys/introspect`). Keys may expire
+ * (`expiresAt`) and get a new secret (rotation) that keeps their id and
+ * prefix, with a grace period for the replaced one.
  */
 @Injectable()
 export class ApiKeysService {
-  private readonly introspections: CounterMetric;
+  private readonly introspections: Counter<'outcome'>;
 
   constructor(
+    @InjectDb() private readonly db: Database<typeof schema>,
     private readonly keys: ApiKeysRepository,
     private readonly organizations: OrganizationsRepository,
     private readonly audit: AuditService,
@@ -71,7 +87,7 @@ export class ApiKeysService {
   ) {
     this.introspections = metrics.counter({
       name: 'auth_api_key_introspections_total',
-      help: 'API key introspections by outcome (active, inactive).',
+      help: 'API key introspections by outcome (active, active_previous: the replaced secret of a rotation during its grace period, inactive).',
       labelNames: ['outcome'],
     });
   }
@@ -107,10 +123,15 @@ export class ApiKeysService {
     const actor = requireUser(principal);
     const refused = ungrantableScopes(actor, input.scopes);
     if (refused.length > 0) throw AuthErrors.scopeNotGrantable(refused);
+    if (
+      input.expiresAt !== undefined &&
+      input.expiresAt.getTime() <= Date.now()
+    )
+      throw AuthErrors.expiryInPast();
     const orgId = this.targetOrg(principal, input.orgId);
     if ((await this.organizations.findById(orgId)) === undefined)
       throw AuthErrors.organizationNotFound(orgId);
-    const material = generateApiKey();
+    const material = await generateApiKey();
     const row = await this.keys.insert({
       id: newId(),
       orgId,
@@ -119,6 +140,7 @@ export class ApiKeysService {
       keyHash: material.hash,
       scopes: [...new Set(input.scopes)],
       createdBy: actor.id,
+      expiresAt: input.expiresAt ?? null,
     });
     await this.audit.record(
       {
@@ -126,12 +148,81 @@ export class ApiKeysService {
         targetType: 'api_key',
         targetId: row.id,
         orgId,
-        meta: { name: row.name, prefix: row.prefix, scopes: row.scopes },
+        meta: {
+          name: row.name,
+          prefix: row.prefix,
+          scopes: row.scopes,
+          expiresAt: row.expiresAt?.toISOString() ?? null,
+        },
       },
       actor,
       request,
     );
     return { row, key: material.key };
+  }
+
+  /**
+   * Gives a key a new secret, returned once. The id and the prefix `sk_<id>`
+   * stay (other services bind to the key id, e.g. telemetry devices), so a
+   * device only swaps the secret. The replaced secret keeps working for
+   * `gracePeriodMin` minutes (0: stops at once); rotating again during a
+   * grace period ends the older one at once (one replaced secret at most).
+   * Under a row lock, so concurrent rotations serialize.
+   *
+   * @throws {NotFoundError} `404 API_KEY_NOT_FOUND` for keys the caller may not manage.
+   * @throws {ForbiddenError} `403 SCOPE_NOT_GRANTABLE` when the key carries a scope
+   *   the caller could not grant (a new secret is a new credential).
+   * @throws {ConflictError} `409 API_KEY_INACTIVE` for revoked or expired keys.
+   */
+  async rotate(
+    principal: Principal,
+    id: string,
+    input: RotateApiKeyInput,
+    request: AuditRequest,
+  ): Promise<CreatedApiKey> {
+    const actor = requireUser(principal);
+    const now = new Date();
+    const rotated = await this.db.transaction(async (tx) => {
+      const current = await this.keys.lockById(id, tx);
+      if (current === undefined || !canManageApiKeys(actor, current.orgId))
+        throw AuthErrors.apiKeyNotFound(id);
+      const refused = ungrantableScopes(actor, parseScopes(current.scopes));
+      if (refused.length > 0) throw AuthErrors.scopeNotGrantable(refused);
+      const status = apiKeyStatus(current, now);
+      if (status !== 'active') throw AuthErrors.apiKeyInactive(id, status);
+      const material = await generateApiKey(current.prefix.slice('sk_'.length));
+      if (material.prefix !== current.prefix)
+        throw new Error(`Rotation changed the prefix of API key ${id}`);
+      const graceEnd = rotationGraceEnd(now, input.gracePeriodMin);
+      const row = await this.keys.rotate(
+        id,
+        {
+          keyHash: material.hash,
+          previousKeyHash: graceEnd === null ? null : current.keyHash,
+          previousKeyExpiresAt: graceEnd,
+        },
+        tx,
+      );
+      return { row, key: material.key };
+    });
+    await this.audit.record(
+      {
+        action: 'api_key.rotate',
+        targetType: 'api_key',
+        targetId: id,
+        orgId: rotated.row.orgId,
+        meta: {
+          name: rotated.row.name,
+          prefix: rotated.row.prefix,
+          gracePeriodMin: input.gracePeriodMin,
+          previousKeyExpiresAt:
+            rotated.row.previousKeyExpiresAt?.toISOString() ?? null,
+        },
+      },
+      actor,
+      request,
+    );
+    return rotated;
   }
 
   /** Revokes a key (idempotent); keys of other organizations are not found. */
@@ -161,19 +252,29 @@ export class ApiKeysService {
 
   /**
    * Introspection for the other services: format check, lookup by prefix,
-   * constant-time hash comparison, revocation; records the use at most once
-   * per minute.
+   * revocation and expiry, constant-time comparison with the current secret
+   * (and with the replaced one during a rotation's grace period); records
+   * the use at most once per minute. The kit caches an active answer for
+   * 60 s per consuming replica, so a revocation, an expiry or the end of a
+   * grace period takes effect there within that time.
    */
   async introspect(key: string): Promise<ApiKeyIntrospectionResult> {
     const parsed = parseApiKey(key);
     const row =
       parsed === null ? undefined : await this.keys.findByPrefix(parsed.prefix);
-    if (row?.revokedAt !== null || !apiKeyMatches(key, row.keyHash)) {
+    const now = new Date();
+    const match =
+      row === undefined || apiKeyStatus(row, now) !== 'active'
+        ? null
+        : await matchApiKey(key, row, now);
+    if (row === undefined || match === null) {
       this.introspections.inc({ outcome: 'inactive' });
       return { active: false };
     }
     await this.keys.touch(row.id);
-    this.introspections.inc({ outcome: 'active' });
+    this.introspections.inc({
+      outcome: match === 'previous' ? 'active_previous' : 'active',
+    });
     return {
       active: true,
       keyId: row.id,

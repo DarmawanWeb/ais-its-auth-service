@@ -26,6 +26,16 @@ export interface NewApiKey {
   readonly keyHash: string;
   readonly scopes: readonly string[];
   readonly createdBy: string | null;
+  /** Inactive from this time on; `null`/absent = no expiry. */
+  readonly expiresAt?: Date | null | undefined;
+}
+
+/** A new secret for a key (`POST /api-keys/:id/rotate`). */
+export interface KeyRotation {
+  readonly keyHash: string;
+  /** Hash of the replaced secret, accepted until {@link previousKeyExpiresAt}; `null` for no grace period. */
+  readonly previousKeyHash: string | null;
+  readonly previousKeyExpiresAt: Date | null;
 }
 
 /** Which keys a listing may see. */
@@ -60,6 +70,52 @@ export class ApiKeysRepository {
       .where(eq(apiKeys.id, id))
       .limit(1);
     return row;
+  }
+
+  /** The key, locked until the end of the transaction (rotations serialize). */
+  async lockById(id: string, tx: Executor): Promise<ApiKeyRow | undefined> {
+    const [row] = await tx
+      .select()
+      .from(apiKeys)
+      .where(eq(apiKeys.id, id))
+      .for('update')
+      .limit(1);
+    return row;
+  }
+
+  /**
+   * Replaces the secret of a key: the new hash, the replaced one with the
+   * end of its grace period (or none), and the rotation time. The id and
+   * the prefix stay.
+   */
+  async rotate(
+    id: string,
+    rotation: KeyRotation,
+    tx: Executor,
+  ): Promise<ApiKeyRow> {
+    const [row] = await tx
+      .update(apiKeys)
+      .set({
+        keyHash: rotation.keyHash,
+        previousKeyHash: rotation.previousKeyHash,
+        previousKeyExpiresAt: rotation.previousKeyExpiresAt,
+        rotatedAt: sql`now()`,
+      })
+      .where(eq(apiKeys.id, id))
+      .returning();
+    if (row === undefined)
+      throw new Error('UPDATE … RETURNING returned no row');
+    return row;
+  }
+
+  /** Housekeeping: forgets replaced secrets whose grace period ended before `before`. */
+  async pruneReplacedSecrets(before: Date): Promise<number> {
+    const rows = await this.db
+      .update(apiKeys)
+      .set({ previousKeyHash: null, previousKeyExpiresAt: null })
+      .where(lt(apiKeys.previousKeyExpiresAt, before))
+      .returning({ id: apiKeys.id });
+    return rows.length;
   }
 
   /** The active key of an organization with this name (seeding is idempotent by name). */

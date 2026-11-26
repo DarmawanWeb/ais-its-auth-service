@@ -11,14 +11,17 @@ import {
   AuditService,
 } from '@darmawanweb/ais-its-nest/audit';
 import type { Principal, UserPrincipal } from '@darmawanweb/ais-its-nest/auth';
-import { type Database, InjectDb } from '@darmawanweb/ais-its-nest/db';
+import {
+  type Database,
+  InjectDb,
+  isUniqueViolation,
+} from '@darmawanweb/ais-its-nest/db';
 import { ForbiddenError } from '@darmawanweb/ais-its-nest';
 import { Injectable } from '@nestjs/common';
 
 import { AuthErrors } from '../../common/errors.js';
 import { requireUser } from '../../common/principals.js';
 import type { Executor, OrganizationRow } from '../../db/database.js';
-import { isUniqueViolation } from '../../db/errors.js';
 import type * as schema from '../../db/schema.js';
 import {
   canManageMembers,
@@ -41,6 +44,7 @@ import {
   UsersRepository,
 } from '../accounts/users.repository.js';
 import { InvitationService } from '../passwords/invitation.service.js';
+import { AuthThrottle } from '../throttling/auth-throttle.service.js';
 
 /** `POST /organizations/:id/members`. */
 export interface InviteMemberInput {
@@ -77,6 +81,7 @@ export class MembersService {
     private readonly invitationRows: InvitationsRepository,
     private readonly invitations: InvitationService,
     private readonly audit: AuditService,
+    private readonly throttle: AuthThrottle,
   ) {}
 
   /** One page of the organization's members. */
@@ -173,7 +178,87 @@ export class MembersService {
       actor,
       request,
     );
-    return { record: { invitation, email: user.email }, invitationSent };
+    return {
+      record: { invitation, email: user.email, invitedByName: actor.name },
+      invitationSent,
+    };
+  }
+
+  /**
+   * Sends a pending (or expired) invitation again: a new link valid
+   * `INVITE_TTL_HOURS` replaces the previous one, which stops working; role
+   * and name stay, the sender becomes the inviter. The role is checked
+   * again against the organization's kind (under its share lock, then the
+   * invitation's row lock: the lock order of every organization change).
+   * At most 3 resends per invitation and hour.
+   *
+   * @throws {NotFoundError} `404 INVITATION_NOT_FOUND` (also once accepted or withdrawn).
+   * @throws {DomainError} `422 ROLE_NOT_GRANTABLE` when the kind changed since.
+   * @throws {RateLimitedError} `429 RATE_LIMITED` beyond the resend limit.
+   */
+  async resendInvitation(
+    orgId: string,
+    invitationId: string,
+    locale: Locale | undefined,
+    principal: Principal,
+    request: AuditRequest,
+  ): Promise<SentInvitation> {
+    const { actor } = await this.manageable(orgId, principal);
+    await this.throttle.consumeInvitationResend(invitationId);
+    const token = this.invitations.newToken();
+    const { invitation, user, organization } = await this.db.transaction(
+      async (tx) => {
+        const organization = await this.organizations.lockForShare(orgId, tx);
+        if (organization === undefined)
+          throw AuthErrors.organizationNotFound(orgId);
+        const pending = await this.invitationRows.lockInOrg(
+          invitationId,
+          orgId,
+          tx,
+        );
+        if (pending === undefined)
+          throw AuthErrors.invitationNotFound(orgId, invitationId);
+        if (!isRoleGrantable(organization.kind, pending.role))
+          throw AuthErrors.roleNotGrantable(pending.role, organization.kind);
+        const user = await this.users.findById(pending.userId, tx);
+        if (user === undefined)
+          throw AuthErrors.invitationNotFound(orgId, invitationId);
+        const invitation = await this.invitationRows.renew(
+          invitationId,
+          {
+            tokenHash: token.tokenHash,
+            expiresAt: token.expiresAt,
+            invitedBy: actor.id,
+          },
+          tx,
+        );
+        return { invitation, user, organization };
+      },
+    );
+    const invitationSent = await this.invitations.send({
+      to: user.email,
+      recipientName: user.name,
+      organization,
+      role: invitation.role,
+      invitedBy: actor.name,
+      token,
+      locale,
+    });
+    await this.audit.record(
+      {
+        action: 'membership.invite.resend',
+        targetType: 'membership_invitation',
+        targetId: invitation.id,
+        orgId,
+        meta: { role: invitation.role, invitationSent },
+      },
+      actor,
+      request,
+    );
+    return {
+      record: { invitation, email: user.email, invitedByName: actor.name },
+      invitationSent,
+    };
   }
 
   /** One page of the organization's pending (and expired) invitations. */

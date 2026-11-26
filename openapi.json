@@ -179,7 +179,7 @@
     },
     "/api/v2/auth/refresh": {
       "post": {
-        "description": "Reads the refresh token from the HttpOnly cookie aisits_rt (Path=/api/v2/auth, SameSite=Strict; set by login, MFA verify and refresh). Browsers send it automatically; an Origin header, when present, must be one of CORS_ORIGINS or PUBLIC_BASE_URL.",
+        "description": "Reads the refresh token from the HttpOnly cookie aisits_rt (set by login, MFA verify and refresh; browsers send it automatically). An Origin header, when present, must be one of CORS_ORIGINS or PUBLIC_BASE_URL (403 ORIGIN_NOT_ALLOWED).",
         "operationId": "AuthController_refresh",
         "parameters": [],
         "responses": {
@@ -211,6 +211,9 @@
           }
         },
         "security": [
+          {
+            "refreshCookie": []
+          },
           {}
         ],
         "summary": "Rotate the refresh cookie and get a new access token",
@@ -221,7 +224,7 @@
     },
     "/api/v2/auth/logout": {
       "post": {
-        "description": "Reads the refresh token from the HttpOnly cookie aisits_rt (Path=/api/v2/auth, SameSite=Strict; set by login, MFA verify and refresh). Browsers send it automatically; an Origin header, when present, must be one of CORS_ORIGINS or PUBLIC_BASE_URL.",
+        "description": "Reads the refresh token from the HttpOnly cookie aisits_rt (set by login, MFA verify and refresh; browsers send it automatically). An Origin header, when present, must be one of CORS_ORIGINS or PUBLIC_BASE_URL (403 ORIGIN_NOT_ALLOWED).",
         "operationId": "AuthController_logout",
         "parameters": [],
         "responses": {
@@ -240,6 +243,9 @@
           }
         },
         "security": [
+          {
+            "refreshCookie": []
+          },
           {}
         ],
         "summary": "Sign out: revoke the session of the refresh cookie and clear it",
@@ -338,6 +344,7 @@
             "in": "query",
             "schema": {
               "minimum": 1,
+              "maximum": 1000000,
               "default": 1,
               "type": "integer"
             }
@@ -405,8 +412,10 @@
             "name": "id",
             "required": true,
             "in": "path",
+            "description": "UUID",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "format": "uuid"
             }
           }
         ],
@@ -731,6 +740,7 @@
     },
     "/api/v2/users": {
       "get": {
+        "description": "Filters: search (e-mail or name), status, ids (batch lookup of up to 100 ids, e.g. the actors of a page of audit records), orgId (members of an organization).",
         "operationId": "UsersController_list",
         "parameters": [
           {
@@ -739,6 +749,7 @@
             "in": "query",
             "schema": {
               "minimum": 1,
+              "maximum": 1000000,
               "default": 1,
               "type": "integer"
             }
@@ -774,6 +785,26 @@
                 "invited",
                 "disabled"
               ]
+            }
+          },
+          {
+            "name": "ids",
+            "required": false,
+            "in": "query",
+            "description": "Only these users: comma-separated ids, at most 100 (with pageSize=100 one page holds them all); unknown ids are skipped",
+            "schema": {
+              "example": "0192f3a4-5b6c-7d8e-9f01-23456789abcd,0192f3a4-5b6c-7d8e-9f01-23456789abce",
+              "type": "string"
+            }
+          },
+          {
+            "name": "orgId",
+            "required": false,
+            "in": "query",
+            "description": "Only members of this organization",
+            "schema": {
+              "format": "uuid",
+              "type": "string"
             }
           }
         ],
@@ -814,7 +845,7 @@
             }
           }
         },
-        "summary": "Search the users of the platform",
+        "summary": "Search the users of the platform (super admins)",
         "tags": [
           "users"
         ],
@@ -831,8 +862,10 @@
             "name": "id",
             "required": true,
             "in": "path",
+            "description": "UUID",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "format": "uuid"
             }
           }
         ],
@@ -887,6 +920,7 @@
             "in": "query",
             "schema": {
               "minimum": 1,
+              "maximum": 1000000,
               "default": 1,
               "type": "integer"
             }
@@ -941,7 +975,7 @@
                     "data": {
                       "type": "array",
                       "items": {
-                        "$ref": "#/components/schemas/OrganizationDto"
+                        "$ref": "#/components/schemas/OrganizationListItemDto"
                       }
                     },
                     "meta": {
@@ -963,7 +997,7 @@
             }
           }
         },
-        "summary": "List organizations (super admins)",
+        "summary": "List organizations with their member and API key counts (super admins)",
         "tags": [
           "organizations"
         ],
@@ -1015,6 +1049,52 @@
         ]
       }
     },
+    "/api/v2/organizations/stats": {
+      "get": {
+        "description": "The counts of the GET /organizations header: total and per kind (every kind listed, 0 included), optionally of the organizations matching search.",
+        "operationId": "OrganizationsController_stats",
+        "parameters": [
+          {
+            "name": "search",
+            "required": false,
+            "in": "query",
+            "description": "Case-insensitive substring of the name or slug",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrganizationStatsDto"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem details (RFC 9457)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Organizations per kind over every page (super admins)",
+        "tags": [
+          "organizations"
+        ],
+        "x-required-permissions": [
+          "org:manage"
+        ]
+      }
+    },
     "/api/v2/organizations/{id}": {
       "get": {
         "operationId": "OrganizationsController_get",
@@ -1023,8 +1103,10 @@
             "name": "id",
             "required": true,
             "in": "path",
+            "description": "UUID",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "format": "uuid"
             }
           }
         ],
@@ -1062,8 +1144,10 @@
             "name": "id",
             "required": true,
             "in": "path",
+            "description": "UUID",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "format": "uuid"
             }
           }
         ],
@@ -1114,8 +1198,10 @@
             "name": "id",
             "required": true,
             "in": "path",
+            "description": "UUID",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "format": "uuid"
             }
           }
         ],
@@ -1148,19 +1234,12 @@
         "operationId": "MembersController_list",
         "parameters": [
           {
-            "name": "id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
             "name": "page",
             "required": false,
             "in": "query",
             "schema": {
               "minimum": 1,
+              "maximum": 1000000,
               "default": 1,
               "type": "integer"
             }
@@ -1174,6 +1253,16 @@
               "maximum": 100,
               "default": 20,
               "type": "integer"
+            }
+          },
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "UUID",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
             }
           }
         ],
@@ -1230,8 +1319,10 @@
             "name": "id",
             "required": true,
             "in": "path",
+            "description": "UUID",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "format": "uuid"
             }
           }
         ],
@@ -1287,19 +1378,23 @@
         "operationId": "MembersController_update",
         "parameters": [
           {
-            "name": "id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
             "name": "userId",
             "required": true,
             "in": "path",
+            "description": "UUID",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "UUID",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
             }
           }
         ],
@@ -1347,19 +1442,23 @@
         "operationId": "MembersController_remove",
         "parameters": [
           {
-            "name": "id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
             "name": "userId",
             "required": true,
             "in": "path",
+            "description": "UUID",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "UUID",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
             }
           }
         ],
@@ -1392,19 +1491,12 @@
         "operationId": "InvitationsController_list",
         "parameters": [
           {
-            "name": "id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
             "name": "page",
             "required": false,
             "in": "query",
             "schema": {
               "minimum": 1,
+              "maximum": 1000000,
               "default": 1,
               "type": "integer"
             }
@@ -1418,6 +1510,16 @@
               "maximum": 100,
               "default": 20,
               "type": "integer"
+            }
+          },
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "UUID",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
             }
           }
         ],
@@ -1467,24 +1569,104 @@
         ]
       }
     },
+    "/api/v2/organizations/{id}/invitations/{invitationId}/resend": {
+      "post": {
+        "description": "Renews a pending or expired invitation: a new link valid INVITE_TTL_HOURS replaces the previous one (which stops working), role and name stay, the sender becomes the inviter. The role is checked again against the kind of the organization. At most 3 resends per invitation and hour (429 RATE_LIMITED with Retry-After beyond).",
+        "operationId": "InvitationsController_resend",
+        "parameters": [
+          {
+            "name": "invitationId",
+            "required": true,
+            "in": "path",
+            "description": "UUID",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "UUID",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResendInvitationDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SentInvitationDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "INVITATION_NOT_FOUND (also once accepted or withdrawn)"
+          },
+          "422": {
+            "description": "ROLE_NOT_GRANTABLE"
+          },
+          "429": {
+            "description": "RATE_LIMITED (Retry-After)"
+          },
+          "default": {
+            "description": "Problem details (RFC 9457)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Send an invitation again with a new link",
+        "tags": [
+          "organizations"
+        ],
+        "x-required-permissions": [
+          "user:manage"
+        ]
+      }
+    },
     "/api/v2/organizations/{id}/invitations/{invitationId}": {
       "delete": {
         "operationId": "InvitationsController_cancel",
         "parameters": [
           {
-            "name": "id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
             "name": "invitationId",
             "required": true,
             "in": "path",
+            "description": "UUID",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "UUID",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
             }
           }
         ],
@@ -1522,6 +1704,7 @@
             "in": "query",
             "schema": {
               "minimum": 1,
+              "maximum": 1000000,
               "default": 1,
               "type": "integer"
             }
@@ -1604,7 +1787,7 @@
         ]
       },
       "post": {
-        "description": "org_admins create keys in their active organization with the scopes telemetry:ingest and ais:read; ais:ingest (the AIS feed shared by every tenant) is granted by super admins only.",
+        "description": "org_admins create keys in their active organization with the scopes telemetry:ingest and ais:read; ais:ingest (the AIS feed shared by every tenant) is granted by super admins only. An optional expiresAt (in the future) ends the key: introspection treats it as inactive from then on (status expired).",
         "operationId": "ApiKeysController_create",
         "parameters": [],
         "requestBody": {
@@ -1651,6 +1834,72 @@
         ]
       }
     },
+    "/api/v2/api-keys/{id}/rotate": {
+      "post": {
+        "description": "The key keeps its id, prefix, name, scopes and expiry, so only the secret changes on the device. The replaced secret keeps working for gracePeriodMin minutes (default 1440 = 24 h, 0 = stops at once; previousKeyExpiresAt in the answer); rotating again during a grace period ends the older secret at once. Other services cache an active key for up to 60 s, so the replaced secret may still pass there for that long after its grace period. A key with a scope the caller could not grant (ais:ingest for org_admins) cannot be rotated by them.",
+        "operationId": "ApiKeysController_rotate",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "UUID",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RotateApiKeyDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatedApiKeyDto"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "SCOPE_NOT_GRANTABLE"
+          },
+          "404": {
+            "description": "API_KEY_NOT_FOUND"
+          },
+          "409": {
+            "description": "API_KEY_INACTIVE (revoked or expired)"
+          },
+          "default": {
+            "description": "Problem details (RFC 9457)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Give an API key a new secret (returned once)",
+        "tags": [
+          "api-keys"
+        ],
+        "x-required-permissions": [
+          "api_key:manage"
+        ]
+      }
+    },
     "/api/v2/api-keys/{id}": {
       "delete": {
         "operationId": "ApiKeysController_revoke",
@@ -1659,8 +1908,10 @@
             "name": "id",
             "required": true,
             "in": "path",
+            "description": "UUID",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "format": "uuid"
             }
           }
         ],
@@ -1740,6 +1991,7 @@
     },
     "/api/v2/audit-logs": {
       "get": {
+        "description": "Filters: actorId, actorEmail (case-insensitive), action (exact) or actionPrefix (e.g. membership.), targetType, targetId, from/to (default: the last 30 days). Records carry the names of their actor, organization and target as they were when the record was stored.",
         "operationId": "AuditLogsController_list",
         "parameters": [
           {
@@ -1793,11 +2045,32 @@
             }
           },
           {
+            "name": "actorEmail",
+            "required": false,
+            "in": "query",
+            "description": "Records of the user with this e-mail (case-insensitive; as captured with the record, or the current one for older records)",
+            "schema": {
+              "example": "siti@example.com",
+              "type": "string"
+            }
+          },
+          {
             "name": "action",
             "required": false,
             "in": "query",
+            "description": "Exact action",
             "schema": {
               "example": "auth.login.failed",
+              "type": "string"
+            }
+          },
+          {
+            "name": "actionPrefix",
+            "required": false,
+            "in": "query",
+            "description": "Actions starting with this text, e.g. membership. for every membership action",
+            "schema": {
+              "example": "membership.",
               "type": "string"
             }
           },
@@ -1875,6 +2148,207 @@
         ]
       }
     },
+    "/api/v2/audit-logs/actions": {
+      "get": {
+        "description": "Same scope as GET /audit-logs (active organization; super admins all or ?orgId). Range from/to: default the last 30 days, at most 366 days (400 VALIDATION_FAILED beyond). Ordered by action, at most 500.",
+        "operationId": "AuditLogsController_actions",
+        "parameters": [
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Start (ISO-8601); default: endpoint specific",
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "End (ISO-8601); default: now",
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "name": "actionPrefix",
+            "required": false,
+            "in": "query",
+            "description": "Only actions starting with this text",
+            "schema": {
+              "example": "membership.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "orgId",
+            "required": false,
+            "in": "query",
+            "description": "Organization (super admins; others read their active organization)",
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditActionsDto"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem details (RFC 9457)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "summary": "The distinct actions recorded in the scope and range, with their counts (filter suggestions)",
+        "tags": [
+          "audit-logs"
+        ],
+        "x-required-permissions": [
+          "audit:read"
+        ]
+      }
+    },
+    "/api/v2/audit-logs.csv": {
+      "get": {
+        "description": "The records of GET /audit-logs with the same filters, scope and default range (newest first) as one streamed RFC 4180 file (`Content-Disposition: attachment`): the header line `id,at,source,actorType,actorId,actorName,actorEmail,orgId,orgName,action,targetType,targetId,targetLabel,ip,userAgent,meta`, CRLF line ends, the values of the JSON records (empty for null, meta as JSON). Text cells that start with =, +, -, @, tab or CR get a leading apostrophe, so spreadsheet programs never run them as formulas (OWASP CSV injection). Errors before the first byte are problem details; a failure during the transfer aborts the connection, so a cut file never looks complete.",
+        "operationId": "AuditLogsExportController_exportCsv",
+        "parameters": [
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Start (ISO-8601); default: endpoint specific",
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "End (ISO-8601); default: now",
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "name": "actorId",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "name": "actorEmail",
+            "required": false,
+            "in": "query",
+            "description": "Records of the user with this e-mail (case-insensitive; as captured with the record, or the current one for older records)",
+            "schema": {
+              "example": "siti@example.com",
+              "type": "string"
+            }
+          },
+          {
+            "name": "action",
+            "required": false,
+            "in": "query",
+            "description": "Exact action",
+            "schema": {
+              "example": "auth.login.failed",
+              "type": "string"
+            }
+          },
+          {
+            "name": "actionPrefix",
+            "required": false,
+            "in": "query",
+            "description": "Actions starting with this text, e.g. membership. for every membership action",
+            "schema": {
+              "example": "membership.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "targetType",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "example": "user",
+              "type": "string"
+            }
+          },
+          {
+            "name": "targetId",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "orgId",
+            "required": false,
+            "in": "query",
+            "description": "Organization (super admins; others read their active organization)",
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "CSV file with a header line (`Content-Type: text/csv; charset=utf-8; header=present`)",
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "id,at,source,actorType,actorId,actorName,actorEmail,orgId,orgName,action,targetType,targetId,targetLabel,ip,userAgent,meta\r\n0192f3a4-5b6c-7d8e-9f01-23456789abcd,2026-11-21T10:15:00.000Z,auth,user,0192f3a4-5b6c-7d8e-9f01-23456789abce,Siti Rahma,siti@example.com,0192f3a4-5b6c-7d8e-9f01-23456789abcf,PT Pelayaran Nusantara,membership.invite,membership_invitation,0192f3a4-5b6c-7d8e-9f01-23456789abd0,officer@example.com,203.0.113.5,Mozilla/5.0,\"{\"\"role\"\":\"\"viewer\"\"}\"\r\n"
+              }
+            }
+          },
+          "default": {
+            "description": "Problem details (RFC 9457)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Export the audit records as CSV (compliance requests)",
+        "tags": [
+          "audit-logs"
+        ],
+        "x-required-permissions": [
+          "audit:read"
+        ]
+      }
+    },
     "/api/v2/auth/methodology": {
       "get": {
         "operationId": "MethodologyController_describe",
@@ -1911,7 +2385,7 @@
   "info": {
     "title": "AIS Maritime Intelligence — AIS ITS Auth Service",
     "description": "Identity, organizations, memberships and roles, sessions, JWT signing keys and JWKS, API keys, MFA and the central audit log",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "contact": {}
   },
   "tags": [
@@ -1972,6 +2446,12 @@
         "in": "header",
         "name": "X-Internal-Token",
         "description": "Service-to-service token"
+      },
+      "refreshCookie": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "aisits_rt",
+        "description": "Refresh token (HttpOnly cookie aisits_rt, path /api/v2/auth)"
       }
     },
     "schemas": {
@@ -2385,7 +2865,8 @@
         "properties": {
           "page": {
             "type": "integer",
-            "minimum": 1
+            "minimum": 1,
+            "maximum": 1000000
           },
           "pageSize": {
             "type": "integer",
@@ -2729,6 +3210,133 @@
           "status"
         ]
       },
+      "OrganizationListItemDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string",
+            "example": "PT Pelayaran Nusantara"
+          },
+          "slug": {
+            "type": "string",
+            "example": "pelayaran-nusantara"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "shipping_company",
+              "authority",
+              "platform",
+              "research"
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "memberCount": {
+            "type": "number",
+            "example": 12,
+            "description": "Members of the organization"
+          },
+          "apiKeyCount": {
+            "type": "number",
+            "example": 3,
+            "description": "API keys that work now (neither revoked nor expired)"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "slug",
+          "kind",
+          "createdAt",
+          "updatedAt",
+          "memberCount",
+          "apiKeyCount"
+        ]
+      },
+      "OrganizationKindCountsDto": {
+        "type": "object",
+        "properties": {
+          "shipping_company": {
+            "type": "number",
+            "example": 40
+          },
+          "authority": {
+            "type": "number",
+            "example": 3
+          },
+          "platform": {
+            "type": "number",
+            "example": 1
+          },
+          "research": {
+            "type": "number",
+            "example": 2
+          }
+        },
+        "required": [
+          "shipping_company",
+          "authority",
+          "platform",
+          "research"
+        ]
+      },
+      "OrganizationStatsDto": {
+        "type": "object",
+        "properties": {
+          "total": {
+            "type": "number",
+            "example": 46,
+            "description": "Organizations (matching search, when given)"
+          },
+          "byKind": {
+            "$ref": "#/components/schemas/OrganizationKindCountsDto"
+          }
+        },
+        "required": [
+          "total",
+          "byKind"
+        ]
+      },
+      "CreateOrganizationDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "example": "PT Pelayaran Nusantara"
+          },
+          "slug": {
+            "type": "string",
+            "maxLength": 63,
+            "description": "Unique handle matching ^[a-z0-9]+(?:-[a-z0-9]+)*$; derived from the name when omitted",
+            "example": "pelayaran-nusantara"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "shipping_company",
+              "authority",
+              "research"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "kind"
+        ]
+      },
       "OrganizationDto": {
         "type": "object",
         "properties": {
@@ -2769,35 +3377,6 @@
           "kind",
           "createdAt",
           "updatedAt"
-        ]
-      },
-      "CreateOrganizationDto": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 200,
-            "example": "PT Pelayaran Nusantara"
-          },
-          "slug": {
-            "type": "string",
-            "maxLength": 63,
-            "description": "Unique handle matching ^[a-z0-9]+(?:-[a-z0-9]+)*$; derived from the name when omitted",
-            "example": "pelayaran-nusantara"
-          },
-          "kind": {
-            "type": "string",
-            "enum": [
-              "shipping_company",
-              "authority",
-              "research"
-            ]
-          }
-        },
-        "required": [
-          "name",
-          "kind"
         ]
       },
       "UpdateOrganizationDto": {
@@ -2944,6 +3523,11 @@
             "nullable": true,
             "description": "User id of the inviting admin"
           },
+          "invitedByName": {
+            "type": "string",
+            "nullable": true,
+            "description": "Display name of the inviting admin (current; null once that account is deleted)"
+          },
           "createdAt": {
             "type": "string",
             "format": "date-time"
@@ -2968,6 +3552,7 @@
           "name",
           "role",
           "invitedBy",
+          "invitedByName",
           "createdAt",
           "expiresAt",
           "expired",
@@ -3021,6 +3606,11 @@
             "nullable": true,
             "description": "User id of the inviting admin"
           },
+          "invitedByName": {
+            "type": "string",
+            "nullable": true,
+            "description": "Display name of the inviting admin (current; null once that account is deleted)"
+          },
           "createdAt": {
             "type": "string",
             "format": "date-time"
@@ -3041,10 +3631,24 @@
           "name",
           "role",
           "invitedBy",
+          "invitedByName",
           "createdAt",
           "expiresAt",
           "expired"
         ]
+      },
+      "ResendInvitationDto": {
+        "type": "object",
+        "properties": {
+          "locale": {
+            "type": "string",
+            "enum": [
+              "id",
+              "en"
+            ],
+            "description": "Language of the invitation e-mail"
+          }
+        }
       },
       "ApiKeyDto": {
         "type": "object",
@@ -3092,6 +3696,33 @@
             "format": "date-time",
             "nullable": true
           },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "The key is inactive from this time on (null: no expiry)"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "expired",
+              "revoked"
+            ],
+            "description": "active, expired (expiresAt passed) or revoked; only active keys pass introspection"
+          },
+          "rotatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "Last secret rotation (POST /api-keys/:id/rotate)"
+          },
+          "previousKeyExpiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "While a rotation grace period runs: when the replaced secret stops working (else null)"
+          },
           "createdAt": {
             "type": "string",
             "format": "date-time"
@@ -3106,6 +3737,10 @@
           "createdBy",
           "lastUsedAt",
           "revokedAt",
+          "expiresAt",
+          "status",
+          "rotatedAt",
+          "previousKeyExpiresAt",
           "createdAt"
         ]
       },
@@ -3136,6 +3771,11 @@
             "type": "string",
             "format": "uuid",
             "description": "Owning organization (super admins); others create keys in their active organization"
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The key stops working at this time (ISO-8601, in the future); absent: no expiry"
           }
         },
         "required": [
@@ -3189,6 +3829,33 @@
             "format": "date-time",
             "nullable": true
           },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "The key is inactive from this time on (null: no expiry)"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "expired",
+              "revoked"
+            ],
+            "description": "active, expired (expiresAt passed) or revoked; only active keys pass introspection"
+          },
+          "rotatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "Last secret rotation (POST /api-keys/:id/rotate)"
+          },
+          "previousKeyExpiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "While a rotation grace period runs: when the replaced secret stops working (else null)"
+          },
           "createdAt": {
             "type": "string",
             "format": "date-time"
@@ -3208,6 +3875,10 @@
           "createdBy",
           "lastUsedAt",
           "revokedAt",
+          "expiresAt",
+          "status",
+          "rotatedAt",
+          "previousKeyExpiresAt",
           "createdAt",
           "key"
         ]
@@ -3222,6 +3893,18 @@
         "required": [
           "apiKey"
         ]
+      },
+      "RotateApiKeyDto": {
+        "type": "object",
+        "properties": {
+          "gracePeriodMin": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 10080,
+            "default": 1440,
+            "description": "Minutes the replaced secret keeps working (0: it stops at once; at most 7 days)"
+          }
+        }
       },
       "IntrospectApiKeyDto": {
         "type": "object",
@@ -3298,10 +3981,28 @@
             "format": "uuid",
             "nullable": true
           },
+          "actorName": {
+            "type": "string",
+            "nullable": true,
+            "example": "Siti Rahma",
+            "description": "Name of the user, or of the API key, that acted, captured when the record was stored (records stored before 0.2.0: the current name); null for system actors and unknown ids"
+          },
+          "actorEmail": {
+            "type": "string",
+            "nullable": true,
+            "example": "siti@example.com",
+            "description": "E-mail of the acting user, captured when the record was stored (older records: the current one); null for API keys and system actors"
+          },
           "orgId": {
             "type": "string",
             "format": "uuid",
             "nullable": true
+          },
+          "orgName": {
+            "type": "string",
+            "nullable": true,
+            "example": "PT Pelayaran Nusantara",
+            "description": "Name of the organization, captured when the record was stored (older records: the current name)"
           },
           "action": {
             "type": "string",
@@ -3315,6 +4016,12 @@
           "targetId": {
             "type": "string",
             "nullable": true
+          },
+          "targetLabel": {
+            "type": "string",
+            "nullable": true,
+            "example": "Siti Rahma <siti@example.com>",
+            "description": "Label of the target when the record was stored: users 'Name <e-mail>', organizations and API keys by name, invitations by address; other services' targets by the producer's meta.targetLabel or meta.name; else null"
           },
           "ip": {
             "type": "string",
@@ -3335,10 +4042,14 @@
           "source",
           "actorType",
           "actorId",
+          "actorName",
+          "actorEmail",
           "orgId",
+          "orgName",
           "action",
           "targetType",
           "targetId",
+          "targetLabel",
           "ip",
           "userAgent",
           "meta"
@@ -3361,6 +4072,44 @@
         "required": [
           "nextCursor",
           "limit"
+        ]
+      },
+      "AuditActionDto": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "example": "membership.invite"
+          },
+          "count": {
+            "type": "number",
+            "example": 12,
+            "description": "Records of the action in the range"
+          },
+          "lastAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Newest record of the action in the range"
+          }
+        },
+        "required": [
+          "action",
+          "count",
+          "lastAt"
+        ]
+      },
+      "AuditActionsDto": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuditActionDto"
+            }
+          }
+        },
+        "required": [
+          "data"
         ]
       },
       "LocalizedTextDto": {
@@ -3422,7 +4171,9 @@
               "telemetry",
               "geo",
               "safety",
-              "surveillance"
+              "surveillance",
+              "notification",
+              "security"
             ],
             "nullable": true
           },
@@ -3440,6 +4191,7 @@
             "enum": [
               "implemented",
               "planned",
+              "not_implemented",
               "deprecated"
             ],
             "nullable": true

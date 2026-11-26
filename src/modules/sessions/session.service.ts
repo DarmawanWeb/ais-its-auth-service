@@ -5,11 +5,13 @@ import {
   AuditService,
 } from '@darmawanweb/ais-its-nest/audit';
 import { type Database, InjectDb } from '@darmawanweb/ais-its-nest/db';
-import { MetricsService } from '@darmawanweb/ais-its-nest/metrics';
+import {
+  type Counter,
+  MetricsService,
+} from '@darmawanweb/ais-its-nest/metrics';
 import { Injectable, Logger } from '@nestjs/common';
 
 import { AuthErrors } from '../../common/errors.js';
-import type { CounterMetric } from '../../common/metrics.js';
 import type { ClientInfo } from '../../common/principals.js';
 import type { Config } from '../../config.js';
 import type {
@@ -85,7 +87,7 @@ type RefreshOutcome =
 @Injectable()
 export class SessionService {
   private readonly logger = new Logger('Sessions');
-  private readonly refreshes: CounterMetric;
+  private readonly refreshes: Counter<'outcome'>;
 
   constructor(
     @InjectDb() private readonly db: Database<typeof schema>,

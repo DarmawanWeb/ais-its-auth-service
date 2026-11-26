@@ -4,17 +4,8 @@ import {
   type Principal,
   RequirePermissions,
 } from '@darmawanweb/ais-its-nest/auth';
-import { ApiPageResponse } from '@darmawanweb/ais-its-nest/http';
-import {
-  Body,
-  Controller,
-  Get,
-  Param,
-  ParseUUIDPipe,
-  Patch,
-  Query,
-  Req,
-} from '@nestjs/common';
+import { ApiPageResponse, UuidParam } from '@darmawanweb/ais-its-nest/http';
+import { Body, Controller, Get, Patch, Query, Req } from '@nestjs/common';
 import { ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { FastifyRequest } from 'fastify';
 
@@ -66,14 +57,18 @@ export class UsersController {
 
   @Get()
   @RequirePermissions('org:manage')
-  @ApiOperation({ summary: 'Search the users of the platform' })
+  @ApiOperation({
+    summary: 'Search the users of the platform (super admins)',
+    description:
+      'Filters: search (e-mail or name), status, ids (batch lookup of up to 100 ids, e.g. the actors of a page of audit records), orgId (members of an organization).',
+  })
   @ApiPageResponse(DirectoryUserDto)
   async list(
     @Query() query: ListUsersQuery,
   ): Promise<Paginated<DirectoryUserDto>> {
-    const { page, pageSize, search, status } = query;
+    const { page, pageSize, search, status, ids, orgId } = query;
     const result = await this.users.list(
-      { search, status },
+      { search, status, ids, orgId },
       { page, pageSize },
     );
     return {
@@ -91,7 +86,7 @@ export class UsersController {
   })
   @ApiOkResponse({ type: DirectoryUserDto })
   async setStatus(
-    @Param('id', new ParseUUIDPipe()) id: string,
+    @UuidParam() id: string,
     @Body() body: UpdateUserStatusDto,
     @CurrentPrincipal() principal: Principal,
     @Req() request: FastifyRequest,

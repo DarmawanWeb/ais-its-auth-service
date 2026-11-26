@@ -16,6 +16,7 @@ import { MethodologyModule } from './modules/methodology/methodology.module.js';
 import { OrganizationsModule } from './modules/organizations/organizations.module.js';
 import { PasswordsModule } from './modules/passwords/passwords.module.js';
 import { UsersModule } from './modules/users/users.module.js';
+import { MIGRATIONS_DIR } from './service.js';
 
 /**
  * Root module. `bootstrapService()` wraps it in the kit's platform root module
@@ -28,7 +29,7 @@ import { UsersModule } from './modules/users/users.module.js';
 @Module({
   imports: [
     // pg pool + drizzle (search_path=auth,public); migrations on boot.
-    DatabaseModule.forRoot({ schema }),
+    DatabaseModule.forRoot({ schema, migrationsDir: MIGRATIONS_DIR }),
     // Produced streams: NOTIFY (e-mail requests) and AUDIT (own security events);
     // AUDIT is also consumed (durable consumer auth-audit, the central audit log).
     NatsModule.forRoot({ streams: ['NOTIFY', 'AUDIT'] }),

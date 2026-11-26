@@ -10,7 +10,19 @@ import {
 import * as schema from '../../db/schema.js';
 import type { OrganizationKind } from '../../domain/access-rules.js';
 
-const { organizations } = schema;
+const { apiKeys, memberships, organizations } = schema;
+
+/** A row of `GET /organizations` with its counts. */
+export interface OrganizationListRow {
+  readonly organization: OrganizationRow;
+  /** Members (memberships) of the organization. */
+  readonly memberCount: number;
+  /** API keys that pass introspection now (neither revoked nor expired). */
+  readonly apiKeyCount: number;
+}
+
+/** Organizations per kind (`GET /organizations/stats`). */
+export type OrganizationKindCounts = Record<OrganizationKind, number>;
 
 /** An organization to insert. */
 export interface NewOrganization {
@@ -139,15 +151,22 @@ export class OrganizationsRepository {
     return rows.length > 0;
   }
 
-  /** One page, by name, and the total. */
+  /** One page, by name, with the counts of each row, and the total. */
   async list(
     filter: OrganizationFilter,
     page: { readonly offset: number; readonly limit: number },
-  ): Promise<{ rows: OrganizationRow[]; total: number }> {
+  ): Promise<{ rows: OrganizationListRow[]; total: number }> {
     const where = and(...filterConditions(filter));
     const [rows, totals] = await Promise.all([
       this.db
-        .select()
+        .select({
+          organization: organizations,
+          // Explicit references: drizzle renders the columns of a one-table
+          // select unqualified, and an unqualified "id" inside the subquery
+          // would be the subquery's own column.
+          memberCount: sql<number>`(SELECT count(*)::int FROM ${memberships} m WHERE m.org_id = ${organizations}.id)`,
+          apiKeyCount: sql<number>`(SELECT count(*)::int FROM ${apiKeys} k WHERE k.org_id = ${organizations}.id AND k.revoked_at IS NULL AND (k.expires_at IS NULL OR k.expires_at > now()))`,
+        })
         .from(organizations)
         .where(where)
         .orderBy(organizations.name, desc(organizations.id))
@@ -156,6 +175,25 @@ export class OrganizationsRepository {
       this.db.select({ total: count() }).from(organizations).where(where),
     ]);
     return { rows, total: totals[0]?.total ?? 0 };
+  }
+
+  /** Organizations matching `filter.search`, per kind (every kind present, 0 included). */
+  async countByKind(
+    filter: Pick<OrganizationFilter, 'search'>,
+  ): Promise<OrganizationKindCounts> {
+    const rows = await this.db
+      .select({ kind: organizations.kind, count: count() })
+      .from(organizations)
+      .where(and(...filterConditions({ search: filter.search })))
+      .groupBy(organizations.kind);
+    const counts: OrganizationKindCounts = {
+      shipping_company: 0,
+      authority: 0,
+      platform: 0,
+      research: 0,
+    };
+    for (const row of rows) counts[row.kind] = row.count;
+    return counts;
   }
 }
 

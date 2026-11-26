@@ -341,6 +341,26 @@ describe(`${SERVICE.packageName} platform behaviour, bootstrap and signing keys`
     );
     const declared = Object.keys(document.components.securitySchemes);
     expect([...used].filter((name) => !declared.includes(name))).toEqual([]);
+    // The refresh cookie is a declared scheme (0.2.0), used by refresh and logout.
+    expect(document.components.securitySchemes.refreshCookie).toMatchObject({
+      type: 'apiKey',
+      in: 'cookie',
+      name: 'aisits_rt',
+    });
+    // (`{}`: the routes are public, the cookie is their only credential.)
+    for (const path of ['/api/v2/auth/refresh', '/api/v2/auth/logout']) {
+      expect(document.paths[path]?.post?.security).toContainEqual({
+        refreshCookie: [],
+      });
+    }
+    // Page-based lists document the page maximum of spec §5.
+    const listUsers = document.paths['/api/v2/users']?.get as unknown as {
+      parameters: { name: string; schema: { maximum?: number } }[];
+    };
+    expect(
+      listUsers.parameters.find((parameter) => parameter.name === 'page')
+        ?.schema.maximum,
+    ).toBe(1_000_000);
     const metrics = await service.app.inject({
       method: 'GET',
       url: '/metrics',

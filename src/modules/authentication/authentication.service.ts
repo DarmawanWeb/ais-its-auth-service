@@ -3,12 +3,14 @@ import {
   AuditService,
 } from '@darmawanweb/ais-its-nest/audit';
 import { DomainError } from '@darmawanweb/ais-its-nest';
-import { MetricsService } from '@darmawanweb/ais-its-nest/metrics';
+import {
+  type Counter,
+  MetricsService,
+} from '@darmawanweb/ais-its-nest/metrics';
 import { InjectRedis, type Redis } from '@darmawanweb/ais-its-nest/redis';
 import { Injectable } from '@nestjs/common';
 
 import { AuthErrors } from '../../common/errors.js';
-import type { CounterMetric } from '../../common/metrics.js';
 import { type ClientInfo, clientInfo } from '../../common/principals.js';
 import type { UserRow } from '../../db/database.js';
 import { accessRoles } from '../../domain/access-rules.js';
@@ -57,7 +59,7 @@ export type SignInRequest = AuditRequest & {
  */
 @Injectable()
 export class AuthenticationService {
-  private readonly logins: CounterMetric;
+  private readonly logins: Counter<'outcome'>;
 
   constructor(
     private readonly users: UsersRepository,

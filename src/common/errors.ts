@@ -123,6 +123,27 @@ export const AuthErrors = {
       extra: { id },
     }),
 
+  /** A revoked or expired key cannot get a new secret (`POST /api-keys/:id/rotate`). */
+  apiKeyInactive: (id: string, reason: 'revoked' | 'expired'): ConflictError =>
+    new ConflictError(
+      `The API key ${id} is ${reason}; create a new key instead of rotating it`,
+      {
+        code: 'API_KEY_INACTIVE',
+        title: 'API key inactive',
+        extra: { id, reason },
+      },
+    ),
+
+  /** `expiresAt` of a new key must lie in the future. */
+  expiryInPast: (): ValidationFailedError =>
+    new ValidationFailedError([
+      {
+        field: 'expiresAt',
+        message: 'expiresAt must be in the future',
+        code: 'futureDate',
+      },
+    ]),
+
   /** The caller may not grant these API-key scopes (`ais:ingest` is for super admins). */
   scopeNotGrantable: (scopes: readonly string[]): ForbiddenError =>
     new ForbiddenError(

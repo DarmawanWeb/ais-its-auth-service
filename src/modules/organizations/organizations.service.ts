@@ -10,13 +10,16 @@ import {
   AuditService,
 } from '@darmawanweb/ais-its-nest/audit';
 import type { Principal } from '@darmawanweb/ais-its-nest/auth';
-import { type Database, InjectDb } from '@darmawanweb/ais-its-nest/db';
+import {
+  type Database,
+  InjectDb,
+  isUniqueViolation,
+} from '@darmawanweb/ais-its-nest/db';
 import { Injectable } from '@nestjs/common';
 
 import { AuthErrors } from '../../common/errors.js';
 import { requireUser } from '../../common/principals.js';
 import type { OrganizationRow } from '../../db/database.js';
-import { isUniqueViolation } from '../../db/errors.js';
 import type * as schema from '../../db/schema.js';
 import {
   canViewOrganization,
@@ -30,6 +33,8 @@ import {
   ORGANIZATION_SLUG_CONSTRAINT,
   type OrganizationChanges,
   type OrganizationFilter,
+  type OrganizationKindCounts,
+  type OrganizationListRow,
   OrganizationsRepository,
 } from '../accounts/organizations.repository.js';
 import { SessionsRepository } from '../accounts/sessions.repository.js';
@@ -57,16 +62,25 @@ export class OrganizationsService {
     private readonly audit: AuditService,
   ) {}
 
-  /** One page of organizations, by name. */
+  /** One page of organizations, by name, with their member and API key counts. */
   async list(
     filter: OrganizationFilter,
     page: PageQuery,
-  ): Promise<Paginated<OrganizationRow>> {
+  ): Promise<Paginated<OrganizationListRow>> {
     const { rows, total } = await this.organizations.list(filter, {
       offset: pageOffset(page),
       limit: page.pageSize,
     });
     return toPaginated(rows, page, total);
+  }
+
+  /** Organizations per kind over every page (optionally those matching `search`). */
+  async stats(filter: {
+    readonly search?: string | undefined;
+  }): Promise<{ total: number; byKind: OrganizationKindCounts }> {
+    const byKind = await this.organizations.countByKind(filter);
+    const total = Object.values(byKind).reduce((sum, value) => sum + value, 0);
+    return { total, byKind };
   }
 
   /**

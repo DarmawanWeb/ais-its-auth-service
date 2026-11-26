@@ -34,6 +34,8 @@ export const THROTTLE_LIMITS = Object.freeze({
   forgotPerEmail: { limit: 3, windowMs: 60 * MINUTE_MS },
   /** Failed password resets and invitation acceptances (bad links) per client IP. */
   resetPerIp: { limit: 10, windowMs: 15 * MINUTE_MS },
+  /** Invitation e-mails sent again per invitation (`…/resend`; 429 beyond). */
+  inviteResendPerInvitation: { limit: 3, windowMs: 60 * MINUTE_MS },
 });
 
 const THROTTLED_DETAIL = 'Too many failed attempts; try again later';
@@ -53,6 +55,7 @@ export class AuthThrottle {
   private readonly forgotIp: FixedWindowRateLimiter;
   private readonly forgotEmail: SlidingWindowRateLimiter;
   private readonly resetIp: FixedWindowRateLimiter;
+  private readonly inviteResend: SlidingWindowRateLimiter;
 
   constructor(@InjectRedis() redis: Redis) {
     this.loginEmail = new FixedWindowRateLimiter(redis, {
@@ -83,6 +86,27 @@ export class AuthThrottle {
       name: 'reset-ip',
       ...THROTTLE_LIMITS.resetPerIp,
     });
+    this.inviteResend = new SlidingWindowRateLimiter(redis, {
+      name: 'invite-resend',
+      ...THROTTLE_LIMITS.inviteResendPerInvitation,
+    });
+  }
+
+  /**
+   * Counts an invitation e-mail sent again, so an admin cannot flood an
+   * address through the platform's mailer.
+   *
+   * @throws {RateLimitedError} `429 RATE_LIMITED` (with `Retry-After`) beyond
+   *   {@link THROTTLE_LIMITS}.inviteResendPerInvitation.
+   */
+  async consumeInvitationResend(invitationId: string): Promise<void> {
+    const result = await this.inviteResend.consume(invitationId);
+    if (!result.allowed) {
+      throw new RateLimitedError({
+        retryAfterSeconds: result.retryAfterMs / 1000,
+        detail: 'This invitation was sent again too often; try again later',
+      });
+    }
   }
 
   /**
