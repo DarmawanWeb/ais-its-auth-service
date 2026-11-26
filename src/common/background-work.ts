@@ -1,4 +1,15 @@
+import { sanitizeError } from '@darmawanweb/ais-its-nest/db';
 import type { Logger } from '@nestjs/common';
+
+/**
+ * The message of a failure as it may be logged: for a database error the
+ * driver's primary message (drizzle's own message lists every bound value,
+ * e.g. the e-mail address of a forgot-password lookup), else the message.
+ */
+export function failureMessage(error: unknown): string {
+  const sanitized = sanitizeError(error);
+  return sanitized instanceof Error ? sanitized.message : String(sanitized);
+}
 
 /**
  * Work a request starts but does not wait for — the forgot-password lookup
@@ -24,7 +35,8 @@ export class BackgroundWork {
       .then(work)
       .catch((error: unknown) => {
         this.logger.error(
-          `${description} failed: ${error instanceof Error ? error.message : String(error)}`,
+          { err: sanitizeError(error) },
+          `${description} failed: ${failureMessage(error)}`,
         );
       })
       .finally(() => {

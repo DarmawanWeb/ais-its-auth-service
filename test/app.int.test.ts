@@ -222,6 +222,10 @@ describe(`${SERVICE.packageName} platform behaviour, bootstrap and signing keys`
       headers: session.headers,
     });
     expect(denied.statusCode).toBe(403);
+    // The kit guard (`@RequirePlatformAdmin()`), before the handler runs.
+    expect(denied.json<{ code: string }>().code).toBe(
+      'PLATFORM_ADMIN_REQUIRED',
+    );
   });
 
   it('retires a rotated key once its successor is older than the grace period', async () => {
@@ -341,6 +345,59 @@ describe(`${SERVICE.packageName} platform behaviour, bootstrap and signing keys`
     );
     const declared = Object.keys(document.components.securitySchemes);
     expect([...used].filter((name) => !declared.includes(name))).toEqual([]);
+    // The refresh cookie is a declared scheme (0.2.0), used by refresh and logout.
+    expect(document.components.securitySchemes.refreshCookie).toMatchObject({
+      type: 'apiKey',
+      in: 'cookie',
+      name: 'aisits_rt',
+    });
+    // (`{}`: the routes are public, the cookie is their only credential.)
+    for (const path of ['/api/v2/auth/refresh', '/api/v2/auth/logout']) {
+      expect(document.paths[path]?.post?.security).toContainEqual({
+        refreshCookie: [],
+      });
+    }
+    // Platform-wide operations document their role (`@RequirePlatformAdmin()`).
+    const rotate = document.paths['/api/v2/auth/keys/rotate']
+      ?.post as unknown as Record<string, unknown> | undefined;
+    expect(rotate?.['x-required-roles']).toEqual(['super_admin']);
+    // Page-based lists document the page maximum of spec §5.
+    const listUsers = document.paths['/api/v2/users']?.get as unknown as {
+      parameters: { name: string; schema: { maximum?: number } }[];
+    };
+    expect(
+      listUsers.parameters.find((parameter) => parameter.name === 'page')
+        ?.schema.maximum,
+    ).toBe(1_000_000);
+    // Bodies that may be omitted are not `required` (generated clients
+    // would force one), and integer fields say so.
+    for (const path of [
+      '/api/v2/api-keys/{id}/rotate',
+      '/api/v2/organizations/{id}/invitations/{invitationId}/resend',
+    ]) {
+      const operation = document.paths[path]?.post as unknown as
+        { requestBody?: { required?: boolean; content?: unknown } } | undefined;
+      expect(operation?.requestBody?.content, path).toBeDefined();
+      expect(operation?.requestBody?.required, path).toBe(false);
+    }
+    const schemas = (
+      document.components as unknown as {
+        schemas: Record<
+          string,
+          { properties: Record<string, Record<string, unknown>> }
+        >;
+      }
+    ).schemas;
+    expect(schemas.RotateApiKeyDto?.properties.gracePeriodMin).toMatchObject({
+      type: 'integer',
+      minimum: 0,
+      maximum: 10_080,
+      default: 1440,
+    });
+    expect(schemas.CreateApiKeyDto?.properties.expiresAt).toMatchObject({
+      type: 'string',
+      format: 'date-time',
+    });
     const metrics = await service.app.inject({
       method: 'GET',
       url: '/metrics',

@@ -4,18 +4,14 @@ import {
   pageOffset,
   toPaginated,
 } from '@darmawanweb/ais-its-contracts/api';
-import {
-  type AuditRequest,
-  AuditService,
-} from '@darmawanweb/ais-its-nest/audit';
+import type { AuditRequest } from '@darmawanweb/ais-its-nest/audit';
 import type { Principal } from '@darmawanweb/ais-its-nest/auth';
-import { type Database, InjectDb } from '@darmawanweb/ais-its-nest/db';
 import { Injectable } from '@nestjs/common';
 
 import { AuthErrors } from '../../common/errors.js';
 import { requireUser } from '../../common/principals.js';
 import type { MembershipRow, UserRow } from '../../db/database.js';
-import type * as schema from '../../db/schema.js';
+import { Transactions } from '../../db/transactions.js';
 import {
   type MembershipWithOrganization,
   MembershipsRepository,
@@ -46,11 +42,10 @@ export interface DirectoryEntry {
 @Injectable()
 export class UsersService {
   constructor(
-    @InjectDb() private readonly db: Database<typeof schema>,
+    private readonly transactions: Transactions,
     private readonly users: UsersRepository,
     private readonly memberships: MembershipsRepository,
     private readonly sessions: SessionsRepository,
-    private readonly audit: AuditService,
   ) {}
 
   /** The signed-in user with their memberships. */
@@ -68,18 +63,21 @@ export class UsersService {
     request: AuditRequest,
   ): Promise<Profile> {
     const actor = requireUser(principal);
-    const user = await this.users.setName(actor.id, name);
-    if (user === undefined) throw AuthErrors.userNotFound(actor.id);
-    await this.audit.record(
-      {
-        action: 'user.update',
-        targetType: 'user',
-        targetId: user.id,
-        meta: { fields: ['name'] },
-      },
-      actor,
-      request,
-    );
+    const user = await this.transactions.run(async ({ tx, audit }) => {
+      const renamed = await this.users.setName(actor.id, name, tx);
+      if (renamed === undefined) throw AuthErrors.userNotFound(actor.id);
+      await audit(
+        {
+          action: 'user.update',
+          targetType: 'user',
+          targetId: renamed.id,
+          meta: { fields: ['name'] },
+        },
+        actor,
+        request,
+      );
+      return renamed;
+    });
     return { user, memberships: await this.memberships.listOfUser(user.id) };
   }
 
@@ -120,12 +118,12 @@ export class UsersService {
   ): Promise<DirectoryEntry> {
     const actor = requireUser(principal);
     if (actor.id === id) throw AuthErrors.ownStatus();
-    const updated = await this.db.transaction(async (tx) => {
+    const updated = await this.transactions.run(async ({ tx, audit }) => {
       // Row lock: a reset or invitation acceptance running at the same time
       // waits for this change (and then sees the new status) or precedes it.
       const user = await this.users.lockById(id, tx);
       if (user === undefined) throw AuthErrors.userNotFound(id);
-      if (user.status === status) return { user, from: user.status };
+      if (user.status === status) return user;
       if (
         status === 'active' &&
         (user.status !== 'disabled' || user.passwordHash === null)
@@ -135,23 +133,21 @@ export class UsersService {
       const changed = await this.users.setStatus(id, status, tx);
       if (changed === undefined) throw AuthErrors.userNotFound(id);
       if (status === 'disabled') await this.sessions.revokeOfUser(id, {}, tx);
-      return { user: changed, from: user.status };
-    });
-    if (updated.from !== status) {
-      await this.audit.record(
+      await audit(
         {
           action: 'user.status.update',
           targetType: 'user',
           targetId: id,
           orgId: null,
-          meta: { from: updated.from, to: status },
+          meta: { from: user.status, to: status },
         },
         actor,
         request,
       );
-    }
+      return changed;
+    });
     return {
-      user: updated.user,
+      user: updated,
       memberships: await this.memberships.listOfUsers([id]),
     };
   }

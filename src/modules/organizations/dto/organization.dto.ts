@@ -1,6 +1,9 @@
 import { ORG_ROLES, type OrgRole } from '@darmawanweb/ais-its-contracts/auth';
 import { LOCALES, type Locale } from '@darmawanweb/ais-its-contracts/domain';
-import { PageQueryDto } from '@darmawanweb/ais-its-nest/http';
+import {
+  IsOptionalNotNull,
+  PageQueryDto,
+} from '@darmawanweb/ais-its-nest/http';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsEmail,
@@ -20,6 +23,10 @@ import {
 } from '../../../domain/access-rules.js';
 import { SLUG_MAX_LENGTH, SLUG_PATTERN } from '../../../domain/identity.js';
 import type { InvitationRecord } from '../../accounts/invitations.repository.js';
+import type {
+  OrganizationKindCounts,
+  OrganizationListRow,
+} from '../../accounts/organizations.repository.js';
 import type { MemberRecord } from '../../accounts/memberships.repository.js';
 
 /** Kinds that can be created through the API (the platform organization comes from the bootstrap). */
@@ -57,6 +64,78 @@ export class OrganizationDto {
   }
 }
 
+/** A row of `GET /organizations` (super admins): the organization and its counts. */
+export class OrganizationListItemDto extends OrganizationDto {
+  @ApiProperty({ example: 12, description: 'Members of the organization' })
+  readonly memberCount: number;
+
+  @ApiProperty({
+    example: 3,
+    description: 'API keys that work now (neither revoked nor expired)',
+  })
+  readonly apiKeyCount: number;
+
+  constructor({ organization, memberCount, apiKeyCount }: OrganizationListRow) {
+    super(organization);
+    this.memberCount = memberCount;
+    this.apiKeyCount = apiKeyCount;
+  }
+}
+
+/** Organizations per kind. */
+export class OrganizationKindCountsDto {
+  @ApiProperty({ example: 40 })
+  readonly shipping_company: number;
+
+  @ApiProperty({ example: 3 })
+  readonly authority: number;
+
+  @ApiProperty({ example: 1 })
+  readonly platform: number;
+
+  @ApiProperty({ example: 2 })
+  readonly research: number;
+
+  constructor(counts: OrganizationKindCounts) {
+    this.shipping_company = counts.shipping_company;
+    this.authority = counts.authority;
+    this.platform = counts.platform;
+    this.research = counts.research;
+  }
+}
+
+/** Result of `GET /organizations/stats`: counts over every page. */
+export class OrganizationStatsDto {
+  @ApiProperty({
+    example: 46,
+    description: 'Organizations (matching search, when given)',
+  })
+  readonly total: number;
+
+  @ApiProperty({ type: OrganizationKindCountsDto })
+  readonly byKind: OrganizationKindCountsDto;
+
+  constructor(stats: {
+    readonly total: number;
+    readonly byKind: OrganizationKindCounts;
+  }) {
+    this.total = stats.total;
+    this.byKind = new OrganizationKindCountsDto(stats.byKind);
+  }
+}
+
+/** Query of `GET /organizations/stats`. */
+export class OrganizationStatsQuery {
+  @ApiPropertyOptional({
+    description: 'Case-insensitive substring of the name or slug',
+  })
+  @IsOptional()
+  @TrimmedInput()
+  @IsString()
+  @Length(1, 200)
+  readonly search?: string;
+}
+
 /** `POST /organizations`. */
 export class CreateOrganizationDto {
   @ApiProperty({
@@ -84,23 +163,26 @@ export class CreateOrganizationDto {
   readonly kind!: Exclude<OrganizationKind, 'platform'>;
 }
 
-/** `PATCH /organizations/:id`. */
+/**
+ * `PATCH /organizations/:id`: absent fields stay unchanged; `null` is
+ * refused with `400 VALIDATION_FAILED` (every column is `NOT NULL`).
+ */
 export class UpdateOrganizationDto {
   @ApiPropertyOptional({ minLength: 1, maxLength: 200 })
-  @IsOptional()
+  @IsOptionalNotNull()
   @TrimmedInput()
   @IsString()
   @Length(1, 200)
   readonly name?: string;
 
   @ApiPropertyOptional({ maxLength: SLUG_MAX_LENGTH })
-  @IsOptional()
+  @IsOptionalNotNull()
   @Matches(SLUG_PATTERN)
   @MaxLength(SLUG_MAX_LENGTH)
   readonly slug?: string;
 
   @ApiPropertyOptional({ enum: CREATABLE_ORGANIZATION_KINDS })
-  @IsOptional()
+  @IsOptionalNotNull()
   @IsIn(CREATABLE_ORGANIZATION_KINDS)
   readonly kind?: Exclude<OrganizationKind, 'platform'>;
 }
@@ -186,6 +268,14 @@ export class InvitationDto {
   })
   readonly invitedBy: string | null;
 
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    description:
+      'Display name of the inviting admin (current; null once that account is deleted)',
+  })
+  readonly invitedByName: string | null;
+
   @ApiProperty({ format: 'date-time' })
   readonly createdAt: string;
 
@@ -198,12 +288,16 @@ export class InvitationDto {
   @ApiProperty({ description: 'The link has expired' })
   readonly expired: boolean;
 
-  constructor({ invitation, email }: InvitationRecord, now: Date = new Date()) {
+  constructor(
+    { invitation, email, invitedByName }: InvitationRecord,
+    now: Date = new Date(),
+  ) {
     this.id = invitation.id;
     this.email = email;
     this.name = invitation.name;
     this.role = invitation.role;
     this.invitedBy = invitation.invitedBy;
+    this.invitedByName = invitedByName;
     this.createdAt = invitation.createdAt.toISOString();
     this.expiresAt = invitation.expiresAt.toISOString();
     this.expired = invitation.expiresAt.getTime() <= now.getTime();
@@ -211,8 +305,9 @@ export class InvitationDto {
 }
 
 /**
- * Result of `POST /organizations/:id/members`: the invitation, identical
- * for new addresses and existing accounts.
+ * Result of `POST /organizations/:id/members` and of
+ * `POST /organizations/:id/invitations/:invitationId/resend`: the
+ * invitation, identical for new addresses and existing accounts.
  */
 export class SentInvitationDto extends InvitationDto {
   @ApiProperty({
@@ -250,6 +345,17 @@ export class InviteMemberDto {
   @IsIn(ORG_ROLES)
   readonly role!: OrgRole;
 
+  @ApiPropertyOptional({
+    enum: LOCALES,
+    description: 'Language of the invitation e-mail',
+  })
+  @IsOptional()
+  @IsIn(LOCALES)
+  readonly locale?: Locale;
+}
+
+/** `POST /organizations/:id/invitations/:invitationId/resend` (the body may be omitted). */
+export class ResendInvitationDto {
   @ApiPropertyOptional({
     enum: LOCALES,
     description: 'Language of the invitation e-mail',

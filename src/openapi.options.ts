@@ -1,12 +1,20 @@
 import type { OpenApiOptions } from '@darmawanweb/ais-its-nest';
+import { REFRESH_COOKIE_SECURITY_SCHEME } from '@darmawanweb/ais-its-nest/http';
 
 import { SERVICE } from './service.js';
+
+/**
+ * Security scheme of the refresh token cookie `aisits_rt` (spec §8.3),
+ * referenced by `@ApiCookieAuth(REFRESH_COOKIE_SCHEME)` on refresh and logout.
+ */
+export const REFRESH_COOKIE_SCHEME = 'refreshCookie';
 
 /** OpenAPI document of the service (`/docs`, `/openapi.json`, `pnpm openapi`). */
 export const OPENAPI: OpenApiOptions = {
   title: `AIS Maritime Intelligence — ${SERVICE.title}`,
   version: SERVICE.version,
   description: SERVICE.description,
+  securitySchemes: { [REFRESH_COOKIE_SCHEME]: REFRESH_COOKIE_SECURITY_SCHEME },
   tags: [
     {
       name: 'auth',

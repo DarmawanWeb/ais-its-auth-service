@@ -1,7 +1,6 @@
 import { ForbiddenError } from '@darmawanweb/ais-its-nest';
 import type { Principal, UserPrincipal } from '@darmawanweb/ais-its-nest/auth';
-
-import { normalizeClientIp } from '../domain/client-ip.js';
+import { clientIp } from '@darmawanweb/ais-its-nest/http';
 
 /**
  * The user behind a request. The auth service accepts no API keys on its
@@ -13,17 +12,6 @@ export function requireUser(principal: Principal): UserPrincipal {
     throw new ForbiddenError('This operation needs a signed-in user');
   }
   return principal;
-}
-
-/** Throws `403 FORBIDDEN` unless the principal is a super admin (spec §13.1 `[super_admin]`). */
-export function assertPlatformAdmin(principal: Principal): UserPrincipal {
-  const user = requireUser(principal);
-  if (!user.isPlatformAdmin) {
-    throw new ForbiddenError('Only platform administrators may do this', {
-      extra: { requiredRole: 'super_admin' },
-    });
-  }
-  return user;
 }
 
 /** Client facts of a request recorded with sessions. */
@@ -45,9 +33,10 @@ const USER_AGENT_MAX_LENGTH = 512;
 
 /**
  * The client IP (`X-Forwarded-For` from trusted proxies only, see
- * `TRUSTED_PROXIES`), normalized by {@link normalizeClientIp} (`null` for a
- * malformed value), and the user agent. Sessions and every throttle key use
- * this value.
+ * `TRUSTED_PROXIES`), normalized by the kit's `clientIp` (ports, brackets
+ * and IPv6 zone ids stripped, `null` for anything that is not an address,
+ * the same rule `AuditService` applies to audit ips), and the user agent.
+ * Sessions and every throttle key use this value.
  */
 export function clientInfo(request: ClientRequestFacts): ClientInfo {
   const agent = request.headers?.['user-agent'];
@@ -55,5 +44,5 @@ export function clientInfo(request: ClientRequestFacts): ClientInfo {
     typeof agent === 'string' && agent !== ''
       ? agent.slice(0, USER_AGENT_MAX_LENGTH)
       : null;
-  return { ip: normalizeClientIp(request.ip), userAgent };
+  return { ip: clientIp(request.ip), userAgent };
 }

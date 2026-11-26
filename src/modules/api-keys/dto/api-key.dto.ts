@@ -2,7 +2,10 @@ import {
   API_KEY_SCOPES,
   type ApiKeyScope,
 } from '@darmawanweb/ais-its-contracts/auth';
-import { PageQueryDto } from '@darmawanweb/ais-its-nest/http';
+import {
+  IsOptionalNotNull,
+  PageQueryDto,
+} from '@darmawanweb/ais-its-nest/http';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
 import {
@@ -12,14 +15,26 @@ import {
   IsArray,
   IsBoolean,
   IsIn,
+  IsInt,
   IsOptional,
   IsString,
   IsUUID,
   Length,
+  Max,
+  Min,
 } from 'class-validator';
 
 import { TrimmedInput } from '../../../common/dto.js';
+import { IsUtcDateTime } from '../../../common/validation.js';
 import type { ApiKeyRow } from '../../../db/database.js';
+import {
+  API_KEY_STATUSES,
+  apiKeyStatus,
+  type ApiKeyStatus,
+  DEFAULT_ROTATION_GRACE_MIN,
+  MAX_ROTATION_GRACE_MIN,
+  pendingGraceEnd,
+} from '../../../domain/api-key-lifecycle.js';
 
 /** An API key on the wire (never its secret or hash). */
 export class ApiKeyDto {
@@ -50,10 +65,42 @@ export class ApiKeyDto {
   @ApiProperty({ type: String, format: 'date-time', nullable: true })
   readonly revokedAt: string | null;
 
+  @ApiProperty({
+    type: String,
+    format: 'date-time',
+    nullable: true,
+    description: 'The key is inactive from this time on (null: no expiry)',
+  })
+  readonly expiresAt: string | null;
+
+  @ApiProperty({
+    enum: API_KEY_STATUSES,
+    description:
+      'active, expired (expiresAt passed) or revoked; only active keys pass introspection',
+  })
+  readonly status: ApiKeyStatus;
+
+  @ApiProperty({
+    type: String,
+    format: 'date-time',
+    nullable: true,
+    description: 'Last secret rotation (POST /api-keys/:id/rotate)',
+  })
+  readonly rotatedAt: string | null;
+
+  @ApiProperty({
+    type: String,
+    format: 'date-time',
+    nullable: true,
+    description:
+      'While a rotation grace period runs: when the replaced secret stops working (else null)',
+  })
+  readonly previousKeyExpiresAt: string | null;
+
   @ApiProperty({ format: 'date-time' })
   readonly createdAt: string;
 
-  constructor(row: ApiKeyRow) {
+  constructor(row: ApiKeyRow, now: Date = new Date()) {
     this.id = row.id;
     this.orgId = row.orgId;
     this.name = row.name;
@@ -63,6 +110,11 @@ export class ApiKeyDto {
     this.lastUsedAt = row.lastUsedAt?.toISOString() ?? null;
     this.revokedAt = row.revokedAt?.toISOString() ?? null;
     this.createdAt = row.createdAt.toISOString();
+    this.expiresAt = row.expiresAt?.toISOString() ?? null;
+    this.status = apiKeyStatus(row, now);
+    this.rotatedAt = row.rotatedAt?.toISOString() ?? null;
+    this.previousKeyExpiresAt =
+      pendingGraceEnd(row, now)?.toISOString() ?? null;
   }
 }
 
@@ -121,6 +173,36 @@ export class CreateApiKeyDto {
   @IsOptional()
   @IsUUID()
   readonly orgId?: string;
+
+  @ApiPropertyOptional({
+    type: String,
+    format: 'date-time',
+    example: '2027-01-01T00:00:00Z',
+    description:
+      'The key stops working at this time: an ISO-8601 UTC timestamp (Z suffix) in the future; absent: no expiry (null is refused)',
+  })
+  @IsOptionalNotNull()
+  @IsUtcDateTime()
+  readonly expiresAt?: string;
+}
+
+/** `POST /api-keys/:id/rotate` (the body may be omitted). */
+export class RotateApiKeyDto {
+  @ApiPropertyOptional({
+    type: 'integer',
+    minimum: 0,
+    maximum: MAX_ROTATION_GRACE_MIN,
+    default: DEFAULT_ROTATION_GRACE_MIN,
+    description:
+      'Minutes the replaced secret keeps working (0: it stops at once; at most 7 days); absent: the default, null is refused',
+  })
+  // Not @IsOptional(): it lets null through, which would replace the
+  // default and end the replaced secret at once.
+  @IsOptionalNotNull()
+  @IsInt()
+  @Min(0)
+  @Max(MAX_ROTATION_GRACE_MIN)
+  readonly gracePeriodMin: number = DEFAULT_ROTATION_GRACE_MIN;
 }
 
 /** Query of `GET /api-keys`. */

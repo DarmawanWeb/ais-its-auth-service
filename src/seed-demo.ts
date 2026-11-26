@@ -8,6 +8,7 @@ import {
 } from '@darmawanweb/ais-its-nest/db';
 import { drizzle } from 'drizzle-orm/node-postgres';
 
+import { logPoolError, runCliTask } from './common/cli.js';
 import { configSchema } from './config.js';
 import * as schema from './db/schema.js';
 import { MembershipsRepository } from './modules/accounts/memberships.repository.js';
@@ -21,6 +22,7 @@ import {
   formatDemoSeed,
 } from './modules/bootstrap/demo-seeder.js';
 import { PasswordHasher } from './modules/crypto/password-hasher.service.js';
+import { MIGRATIONS_DIR } from './service.js';
 
 // `pnpm seed:demo` (spec §13.1): applies the migrations, then creates the demo
 // organizations, one user per role and two API keys, audits them and prints
@@ -36,18 +38,20 @@ if (refusal !== undefined) {
   logger.error(refusal);
   process.exitCode = 1;
 } else {
-  await seed();
+  // A failed insert must not print the argon2id hash of SEED_DEMO_PASSWORD it bound.
+  await runCliTask(logger, 'Seeding the demo data failed', seed);
 }
 
 async function seed(): Promise<void> {
-  const pool = createDatabasePool(databasePoolSettings(config), (error) => {
-    logger.error({ err: error }, 'Database pool error');
-  });
+  const pool = createDatabasePool(
+    databasePoolSettings(config),
+    logPoolError(logger),
+  );
   try {
     await runMigrations({
       pool,
       schema: config.DATABASE_SCHEMA,
-      dir: new URL('../migrations', import.meta.url).pathname,
+      dir: MIGRATIONS_DIR,
       logger: {
         info: (message) => {
           logger.info(message);

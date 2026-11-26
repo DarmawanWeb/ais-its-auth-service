@@ -1,15 +1,13 @@
 import { newId } from '@darmawanweb/ais-its-contracts/domain';
 import { InjectConfig } from '@darmawanweb/ais-its-nest';
+import type { AuditRequest } from '@darmawanweb/ais-its-nest/audit';
 import {
-  type AuditRequest,
-  AuditService,
-} from '@darmawanweb/ais-its-nest/audit';
-import { type Database, InjectDb } from '@darmawanweb/ais-its-nest/db';
-import { MetricsService } from '@darmawanweb/ais-its-nest/metrics';
+  type Counter,
+  MetricsService,
+} from '@darmawanweb/ais-its-nest/metrics';
 import { Injectable, Logger } from '@nestjs/common';
 
 import { AuthErrors } from '../../common/errors.js';
-import type { CounterMetric } from '../../common/metrics.js';
 import type { ClientInfo } from '../../common/principals.js';
 import type { Config } from '../../config.js';
 import type {
@@ -18,7 +16,7 @@ import type {
   SessionRow,
   UserRow,
 } from '../../db/database.js';
-import type * as schema from '../../db/schema.js';
+import { Transactions } from '../../db/transactions.js';
 import { accessRoles } from '../../domain/access-rules.js';
 import {
   generateOpaqueToken,
@@ -85,15 +83,14 @@ type RefreshOutcome =
 @Injectable()
 export class SessionService {
   private readonly logger = new Logger('Sessions');
-  private readonly refreshes: CounterMetric;
+  private readonly refreshes: Counter<'outcome'>;
 
   constructor(
-    @InjectDb() private readonly db: Database<typeof schema>,
+    private readonly transactions: Transactions,
     @InjectConfig() private readonly config: Config,
     private readonly sessions: SessionsRepository,
     private readonly memberships: MembershipsRepository,
     private readonly tokens: TokenService,
-    private readonly audit: AuditService,
     metrics: MetricsService,
   ) {
     this.refreshes = metrics.counter({
@@ -103,14 +100,20 @@ export class SessionService {
     });
   }
 
-  /** Opens a session for a user whose credentials were verified. */
+  /**
+   * Opens a session for a user whose credentials were verified, in the
+   * caller's transaction (`tx`, which also records the sign-in).
+   */
   async open(
     user: UserRow,
     orgId: string | null,
     client: ClientInfo,
+    tx: Executor,
   ): Promise<OpenedSession> {
     const role =
-      orgId === null ? undefined : await this.memberships.find(user.id, orgId);
+      orgId === null
+        ? undefined
+        : await this.memberships.find(user.id, orgId, tx);
     const refresh = this.newRefreshToken();
     const session = await this.sessions.create(
       {
@@ -125,6 +128,7 @@ export class SessionService {
         tokenHash: sha256Hex(refresh.token),
         expiresAt: refresh.expiresAt,
       },
+      tx,
     );
     const access = await this.tokens.issueAccessToken({
       userId: user.id,
@@ -153,8 +157,22 @@ export class SessionService {
       this.refreshes.inc({ outcome: 'missing' });
       throw AuthErrors.invalidRefreshToken();
     }
-    const outcome = await this.db.transaction(async (tx) => {
+    const outcome = await this.transactions.run(async ({ tx, audit }) => {
       const rotation = await this.rotateLocked(sha256Hex(presented), tx);
+      if (rotation.kind === 'refused' && rotation.reason === 'reuse_detected') {
+        // Commits with the revocation of the session (the token family).
+        await audit(
+          {
+            action: 'auth.refresh.reuse_detected',
+            targetType: 'session',
+            targetId: rotation.session.id,
+            orgId: rotation.session.orgId,
+            meta: { userId: rotation.user.id },
+          },
+          undefined,
+          request,
+        );
+      }
       if (rotation.kind !== 'rotated') return rotation;
       // Signed before the rotation commits: when signing fails (no signing
       // key loaded, 503) the rotation rolls back and the presented token
@@ -178,7 +196,7 @@ export class SessionService {
     }
     if (outcome.kind === 'refused') {
       this.refreshes.inc({ outcome: outcome.reason });
-      return this.refuse(outcome, request);
+      return this.refuse(outcome);
     }
     this.refreshes.inc({ outcome: 'rotated' });
     return { access: outcome.access, refresh: outcome.refresh };
@@ -194,19 +212,21 @@ export class SessionService {
   ): Promise<void> {
     if (presented === undefined || !isOpaqueToken(presented)) return;
     const found = await this.sessions.findByToken(sha256Hex(presented));
-    if (found === undefined || !(await this.sessions.revoke(found.session.id)))
-      return;
+    if (found === undefined) return;
     const { session, user } = found;
-    await this.audit.record(
-      {
-        action: 'auth.logout',
-        targetType: 'session',
-        targetId: session.id,
-        orgId: session.orgId,
-      },
-      actorOf(user, session),
-      request,
-    );
+    await this.transactions.run(async ({ tx, audit }) => {
+      if (!(await this.sessions.revoke(session.id, tx))) return;
+      await audit(
+        {
+          action: 'auth.logout',
+          targetType: 'session',
+          targetId: session.id,
+          orgId: session.orgId,
+        },
+        actorOf(user, session),
+        request,
+      );
+    });
   }
 
   private newRefreshToken(now: Date = new Date()): RefreshCookie {
@@ -276,26 +296,15 @@ export class SessionService {
     }
   }
 
-  /** Records and reports a refused refresh (after the revocation committed). */
-  private async refuse(
-    outcome: Extract<RefreshOutcome, { kind: 'refused' }>,
-    request: AuditRequest,
-  ): Promise<never> {
+  /**
+   * Reports a refused refresh (after the revocation and, for a reuse, its
+   * audit record committed).
+   */
+  private refuse(outcome: Extract<RefreshOutcome, { kind: 'refused' }>): never {
     const { user, session, reason } = outcome;
     if (reason === 'reuse_detected') {
       this.logger.warn(
         `Refresh token reuse detected: session ${session.id} of user ${user.id} revoked`,
-      );
-      await this.audit.record(
-        {
-          action: 'auth.refresh.reuse_detected',
-          targetType: 'session',
-          targetId: session.id,
-          orgId: session.orgId,
-          meta: { userId: user.id },
-        },
-        undefined,
-        request,
       );
       throw AuthErrors.refreshTokenReused();
     }

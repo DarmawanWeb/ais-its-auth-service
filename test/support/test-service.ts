@@ -26,7 +26,7 @@ import { OrganizationsRepository } from '../../src/modules/accounts/organization
 import { UsersRepository } from '../../src/modules/accounts/users.repository.js';
 import { PasswordHasher } from '../../src/modules/crypto/password-hasher.service.js';
 import { OPENAPI } from '../../src/openapi.options.js';
-import { SERVICE } from '../../src/service.js';
+import { EXPOSED_HEADERS, SERVICE } from '../../src/service.js';
 
 /** Credentials of the bootstrap super admin in every test application. */
 export const TEST_ADMIN = Object.freeze({
@@ -42,6 +42,7 @@ export const WEB_ORIGIN = 'http://localhost:5173';
 
 /** The tables of the service, emptied before every test file. */
 const TABLES = [
+  'outbox',
   'audit_logs',
   'api_keys',
   'password_reset_tokens',
@@ -139,6 +140,10 @@ async function resetState(
  */
 export async function startTestService(
   env: Readonly<Record<string, string>> = {},
+  options: {
+    /** Receives the service's JSON log lines (set `LOG_LEVEL` in `env`). */
+    readonly logLines?: string[];
+  } = {},
 ): Promise<TestService> {
   const infra = inject('infra');
   await resetState(infra.databaseUrl, infra.redisUrl);
@@ -166,6 +171,17 @@ export async function startTestService(
     config,
     openapi: OPENAPI,
     cookies: true,
+    cors: { exposedHeaders: EXPOSED_HEADERS },
+    logging:
+      options.logLines === undefined
+        ? undefined
+        : {
+            destination: {
+              write: (line: string) => {
+                options.logLines?.push(line);
+              },
+            },
+          },
   });
   const hasher = new PasswordHasher();
 

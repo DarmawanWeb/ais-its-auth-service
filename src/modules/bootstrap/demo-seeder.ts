@@ -281,7 +281,7 @@ export class DemoSeeder {
     ) {
       return { name: demo.name, scopes: demo.scopes, key: null };
     }
-    const material = generateApiKey();
+    const material = await generateApiKey();
     const id = newId();
     await this.apiKeys.insert(
       {
@@ -312,23 +312,23 @@ export class DemoSeeder {
     orgId: string | null,
     meta: Record<string, unknown>,
   ): Promise<void> {
-    await this.audit.repository.insert(
-      {
-        id: newId(),
-        at: new Date(),
-        source: this.audit.source,
-        actorType: 'system',
-        actorId: null,
-        orgId,
-        action,
-        targetType,
-        targetId,
-        ip: null,
-        userAgent: null,
-        meta: { ...meta, seed: 'demo' },
-      },
-      tx,
-    );
+    const entry = {
+      id: newId(),
+      at: new Date(),
+      source: this.audit.source,
+      actorType: 'system',
+      actorId: null,
+      orgId,
+      action,
+      targetType,
+      targetId,
+      ip: null,
+      userAgent: null,
+      meta: { ...meta, seed: 'demo' },
+    } as const;
+    // The names of the consumer's records, read in the seed transaction.
+    const labels = await this.audit.repository.labelsFor(entry, tx);
+    await this.audit.repository.insert({ ...entry, ...labels }, tx);
   }
 }
 

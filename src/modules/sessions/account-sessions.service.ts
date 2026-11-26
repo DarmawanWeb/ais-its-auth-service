@@ -4,16 +4,14 @@ import {
   pageOffset,
   toPaginated,
 } from '@darmawanweb/ais-its-contracts/api';
-import {
-  type AuditRequest,
-  AuditService,
-} from '@darmawanweb/ais-its-nest/audit';
+import type { AuditRequest } from '@darmawanweb/ais-its-nest/audit';
 import type { Principal } from '@darmawanweb/ais-its-nest/auth';
 import { Injectable } from '@nestjs/common';
 
 import { AuthErrors } from '../../common/errors.js';
 import { requireUser } from '../../common/principals.js';
 import type { SessionRow } from '../../db/database.js';
+import { Transactions } from '../../db/transactions.js';
 import { accessRoles } from '../../domain/access-rules.js';
 import { MembershipsRepository } from '../accounts/memberships.repository.js';
 import { OrganizationsRepository } from '../accounts/organizations.repository.js';
@@ -48,7 +46,7 @@ export class AccountSessionsService {
     private readonly organizations: OrganizationsRepository,
     private readonly memberships: MembershipsRepository,
     private readonly tokens: TokenService,
-    private readonly audit: AuditService,
+    private readonly transactions: Transactions,
   ) {}
 
   /** The user's active sessions, most recently used first. */
@@ -78,17 +76,19 @@ export class AccountSessionsService {
     request: AuditRequest,
   ): Promise<void> {
     const user = requireUser(principal);
-    if (!(await this.sessions.revokeOwn(user.id, sessionId)))
-      throw AuthErrors.sessionNotFound(sessionId);
-    await this.audit.record(
-      {
-        action: 'auth.session.revoke',
-        targetType: 'session',
-        targetId: sessionId,
-      },
-      user,
-      request,
-    );
+    await this.transactions.run(async ({ tx, audit }) => {
+      if (!(await this.sessions.revokeOwn(user.id, sessionId, tx)))
+        throw AuthErrors.sessionNotFound(sessionId);
+      await audit(
+        {
+          action: 'auth.session.revoke',
+          targetType: 'session',
+          targetId: sessionId,
+        },
+        user,
+        request,
+      );
+    });
   }
 
   /**
@@ -112,33 +112,38 @@ export class AccountSessionsService {
         throw AuthErrors.organizationNotFound(orgId);
       }
     }
-    if (!(await this.sessions.setOrg(actor.sessionId, orgId))) {
-      throw AuthErrors.invalidRefreshToken(
-        'The session was revoked; sign in again',
-      );
-    }
     const roles = accessRoles(membership?.role ?? null, user.isPlatformAdmin);
-    const access = await this.tokens.issueAccessToken({
-      userId: user.id,
-      sessionId: actor.sessionId,
-      orgId,
-      roles,
-      email: user.email,
-      name: user.name,
+    // Signed inside the transaction: when signing fails (no key loaded) the
+    // session keeps its organization and no switch is recorded.
+    const access = await this.transactions.run(async ({ tx, audit }) => {
+      if (!(await this.sessions.setOrg(actor.sessionId, orgId, tx))) {
+        throw AuthErrors.invalidRefreshToken(
+          'The session was revoked; sign in again',
+        );
+      }
+      const token = await this.tokens.issueAccessToken({
+        userId: user.id,
+        sessionId: actor.sessionId,
+        orgId,
+        roles,
+        email: user.email,
+        name: user.name,
+      });
+      if (actor.orgId !== orgId) {
+        await audit(
+          {
+            action: 'auth.session.switch_org',
+            targetType: 'session',
+            targetId: actor.sessionId,
+            orgId,
+            meta: { fromOrgId: actor.orgId, roles },
+          },
+          actor,
+          request,
+        );
+      }
+      return token;
     });
-    if (actor.orgId !== orgId) {
-      await this.audit.record(
-        {
-          action: 'auth.session.switch_org',
-          targetType: 'session',
-          targetId: actor.sessionId,
-          orgId,
-          meta: { fromOrgId: actor.orgId, roles },
-        },
-        actor,
-        request,
-      );
-    }
     return { access, activeOrgId: orgId };
   }
 }

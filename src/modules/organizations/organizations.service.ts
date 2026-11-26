@@ -5,19 +5,15 @@ import {
   toPaginated,
 } from '@darmawanweb/ais-its-contracts/api';
 import { newId } from '@darmawanweb/ais-its-contracts/domain';
-import {
-  type AuditRequest,
-  AuditService,
-} from '@darmawanweb/ais-its-nest/audit';
+import type { AuditRequest } from '@darmawanweb/ais-its-nest/audit';
 import type { Principal } from '@darmawanweb/ais-its-nest/auth';
-import { type Database, InjectDb } from '@darmawanweb/ais-its-nest/db';
+import { isUniqueViolation } from '@darmawanweb/ais-its-nest/db';
 import { Injectable } from '@nestjs/common';
 
 import { AuthErrors } from '../../common/errors.js';
 import { requireUser } from '../../common/principals.js';
 import type { OrganizationRow } from '../../db/database.js';
-import { isUniqueViolation } from '../../db/errors.js';
-import type * as schema from '../../db/schema.js';
+import { Transactions } from '../../db/transactions.js';
 import {
   canViewOrganization,
   type OrganizationKind,
@@ -30,6 +26,8 @@ import {
   ORGANIZATION_SLUG_CONSTRAINT,
   type OrganizationChanges,
   type OrganizationFilter,
+  type OrganizationKindCounts,
+  type OrganizationListRow,
   OrganizationsRepository,
 } from '../accounts/organizations.repository.js';
 import { SessionsRepository } from '../accounts/sessions.repository.js';
@@ -49,24 +47,32 @@ export interface CreateOrganizationInput {
 @Injectable()
 export class OrganizationsService {
   constructor(
-    @InjectDb() private readonly db: Database<typeof schema>,
+    private readonly transactions: Transactions,
     private readonly organizations: OrganizationsRepository,
     private readonly memberships: MembershipsRepository,
     private readonly invitations: InvitationsRepository,
     private readonly sessions: SessionsRepository,
-    private readonly audit: AuditService,
   ) {}
 
-  /** One page of organizations, by name. */
+  /** One page of organizations, by name, with their member and API key counts. */
   async list(
     filter: OrganizationFilter,
     page: PageQuery,
-  ): Promise<Paginated<OrganizationRow>> {
+  ): Promise<Paginated<OrganizationListRow>> {
     const { rows, total } = await this.organizations.list(filter, {
       offset: pageOffset(page),
       limit: page.pageSize,
     });
     return toPaginated(rows, page, total);
+  }
+
+  /** Organizations per kind over every page (optionally those matching `search`). */
+  async stats(filter: {
+    readonly search?: string | undefined;
+  }): Promise<{ total: number; byKind: OrganizationKindCounts }> {
+    const byKind = await this.organizations.countByKind(filter);
+    const total = Object.values(byKind).reduce((sum, value) => sum + value, 0);
+    return { total, byKind };
   }
 
   /**
@@ -91,26 +97,26 @@ export class OrganizationsService {
   ): Promise<OrganizationRow> {
     const slug = input.slug ?? slugify(input.name);
     if (slug === null) throw AuthErrors.slugRequired();
-    const organization = await uniqueSlug(slug, () =>
-      this.organizations.insert({
-        id: newId(),
-        name: input.name,
-        slug,
-        kind: input.kind,
+    return uniqueSlug(slug, () =>
+      this.transactions.run(async ({ tx, audit }) => {
+        const organization = await this.organizations.insert(
+          { id: newId(), name: input.name, slug, kind: input.kind },
+          tx,
+        );
+        await audit(
+          {
+            action: 'organization.create',
+            targetType: 'organization',
+            targetId: organization.id,
+            orgId: organization.id,
+            meta: { name: organization.name, slug, kind: organization.kind },
+          },
+          principal,
+          request,
+        );
+        return organization;
       }),
     );
-    await this.audit.record(
-      {
-        action: 'organization.create',
-        targetType: 'organization',
-        targetId: organization.id,
-        orgId: organization.id,
-        meta: { name: organization.name, slug, kind: organization.kind },
-      },
-      principal,
-      request,
-    );
-    return organization;
   }
 
   /**
@@ -129,8 +135,8 @@ export class OrganizationsService {
     const fields = (['name', 'slug', 'kind'] as const).filter(
       (field) => changes[field] !== undefined,
     );
-    const updated = await uniqueSlug(changes.slug, () =>
-      this.db.transaction(async (tx) => {
+    return uniqueSlug(changes.slug, () =>
+      this.transactions.run(async ({ tx, audit }) => {
         const current = await this.organizations.lockById(id, tx);
         if (current === undefined) throw AuthErrors.organizationNotFound(id);
         const kind = changes.kind;
@@ -143,7 +149,7 @@ export class OrganizationsService {
             'The platform organization cannot change its kind',
           );
         }
-        if (fields.length === 0) return { row: current, changed: false };
+        if (fields.length === 0) return current;
         if (kind !== undefined && kind !== current.kind) {
           // Pending invitations count: every invitation stays acceptable.
           const stranded = rolesStrandedByKind(kind, [
@@ -155,22 +161,20 @@ export class OrganizationsService {
         }
         const row = await this.organizations.update(id, changes, tx);
         if (row === undefined) throw AuthErrors.organizationNotFound(id);
-        return { row, changed: true };
+        await audit(
+          {
+            action: 'organization.update',
+            targetType: 'organization',
+            targetId: id,
+            orgId: id,
+            meta: { fields },
+          },
+          principal,
+          request,
+        );
+        return row;
       }),
     );
-    if (!updated.changed) return updated.row;
-    await this.audit.record(
-      {
-        action: 'organization.update',
-        targetType: 'organization',
-        targetId: id,
-        orgId: id,
-        meta: { fields },
-      },
-      principal,
-      request,
-    );
-    return updated.row;
   }
 
   /**
@@ -182,7 +186,7 @@ export class OrganizationsService {
     principal: Principal,
     request: AuditRequest,
   ): Promise<void> {
-    const deleted = await this.db.transaction(async (tx) => {
+    await this.transactions.run(async ({ tx, audit }) => {
       const organization = await this.organizations.lockById(id, tx);
       if (organization === undefined) throw AuthErrors.organizationNotFound(id);
       if (organization.kind === 'platform') {
@@ -191,24 +195,25 @@ export class OrganizationsService {
         );
       }
       const revokedSessions = await this.sessions.revokeOfOrg(id, tx);
-      await this.organizations.delete(id, tx);
-      return { organization, revokedSessions };
-    });
-    await this.audit.record(
-      {
-        action: 'organization.delete',
-        targetType: 'organization',
-        targetId: id,
-        orgId: id,
-        meta: {
-          name: deleted.organization.name,
-          slug: deleted.organization.slug,
-          revokedSessions: deleted.revokedSessions,
+      // Before the delete: the record captures the organization's name as
+      // `orgName` and `targetLabel` (it commits or rolls back with it).
+      await audit(
+        {
+          action: 'organization.delete',
+          targetType: 'organization',
+          targetId: id,
+          orgId: id,
+          meta: {
+            name: organization.name,
+            slug: organization.slug,
+            revokedSessions,
+          },
         },
-      },
-      principal,
-      request,
-    );
+        principal,
+        request,
+      );
+      await this.organizations.delete(id, tx);
+    });
   }
 }
 

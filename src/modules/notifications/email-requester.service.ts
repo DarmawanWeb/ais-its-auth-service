@@ -2,11 +2,14 @@ import {
   type EmailRequestedV1,
   EVENT_TYPES,
 } from '@darmawanweb/ais-its-contracts/events';
-import { MetricsService } from '@darmawanweb/ais-its-nest/metrics';
+import {
+  type Counter,
+  MetricsService,
+} from '@darmawanweb/ais-its-nest/metrics';
 import { EventPublisher } from '@darmawanweb/ais-its-nest/nats';
 import { Injectable, Logger } from '@nestjs/common';
 
-import type { CounterMetric } from '../../common/metrics.js';
+import { failureMessage } from '../../common/background-work.js';
 
 /**
  * Requests transactional e-mails from the notification service by
@@ -17,7 +20,7 @@ import type { CounterMetric } from '../../common/metrics.js';
 @Injectable()
 export class EmailRequester {
   private readonly logger = new Logger('EmailRequester');
-  private readonly requests: CounterMetric;
+  private readonly requests: Counter<'template' | 'outcome'>;
 
   constructor(
     private readonly publisher: EventPublisher,
@@ -45,7 +48,7 @@ export class EmailRequester {
     } catch (error) {
       this.requests.inc({ template: email.template, outcome: 'failed' });
       this.logger.error(
-        `Requesting the ${email.template} e-mail failed: ${error instanceof Error ? error.message : String(error)}`,
+        `Requesting the ${email.template} e-mail failed: ${failureMessage(error)}`,
       );
       return false;
     }

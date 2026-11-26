@@ -1,7 +1,5 @@
 import { newId } from '@darmawanweb/ais-its-contracts/domain';
 import { InjectConfig } from '@darmawanweb/ais-its-nest';
-import { AuditService } from '@darmawanweb/ais-its-nest/audit';
-import { type Database, InjectDb } from '@darmawanweb/ais-its-nest/db';
 import {
   Injectable,
   Logger,
@@ -10,7 +8,7 @@ import {
 import { sql } from 'drizzle-orm';
 
 import { type Config, DEV_BOOTSTRAP_ADMIN_PASSWORD } from '../../config.js';
-import type * as schema from '../../db/schema.js';
+import { Transactions } from '../../db/transactions.js';
 import { normalizeEmail } from '../../domain/identity.js';
 import { checkPasswordPolicy } from '../../domain/password-policy.js';
 import { MembershipsRepository } from '../accounts/memberships.repository.js';
@@ -46,13 +44,12 @@ export class PlatformBootstrap implements OnApplicationBootstrap {
   private readonly logger = new Logger('Bootstrap');
 
   constructor(
-    @InjectDb() private readonly db: Database<typeof schema>,
+    private readonly transactions: Transactions,
     @InjectConfig() private readonly config: Config,
     private readonly users: UsersRepository,
     private readonly organizations: OrganizationsRepository,
     private readonly memberships: MembershipsRepository,
     private readonly hasher: PasswordHasher,
-    private readonly audit: AuditService,
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
@@ -61,7 +58,7 @@ export class PlatformBootstrap implements OnApplicationBootstrap {
     this.assertUsablePassword(password);
     const passwordHash = await this.hasher.hash(password);
     const email = normalizeEmail(this.config.BOOTSTRAP_ADMIN_EMAIL);
-    const created = await this.db.transaction(async (tx) => {
+    const created = await this.transactions.run(async ({ tx, audit }) => {
       await tx.execute(
         sql`SELECT pg_advisory_xact_lock(hashtext('aisits.auth.bootstrap'))`,
       );
@@ -87,19 +84,19 @@ export class PlatformBootstrap implements OnApplicationBootstrap {
         { userId: admin.id, orgId: organization.id, role: 'org_admin' },
         tx,
       );
+      await audit({
+        action: 'platform.bootstrap',
+        targetType: 'user',
+        targetId: admin.id,
+        orgId: organization.id,
+        meta: { email, organizationId: organization.id },
+      });
       return { organization, admin };
     });
     if (created === undefined) return;
     this.logger.warn(
       `Bootstrapped the platform organization and the super admin ${email}: change the bootstrap password now`,
     );
-    await this.audit.record({
-      action: 'platform.bootstrap',
-      targetType: 'user',
-      targetId: created.admin.id,
-      orgId: created.organization.id,
-      meta: { email, organizationId: created.organization.id },
-    });
   }
 
   private assertUsablePassword(password: string): void {

@@ -6,6 +6,116 @@ All notable changes to `ais-its-auth-service` are documented in this file. The f
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-26
+
+Upgrade to `@darmawanweb/ais-its-contracts` 0.4.0 and `@darmawanweb/ais-its-nest` 0.3.0 (the
+local workarounds for the platform issues this service reported are gone), the backend gaps the
+web app reported for the admin pages, and the security hardening made after 0.1.0. Migrations
+`0003` and `0004` only add nullable columns and a `CHECK`, `0005` creates the audit outbox table;
+0.1.0 and 0.2.0 replicas can run side by side during a rolling update, but only 0.2.0 serves the
+new routes, captures audit names, queues its audit records in the outbox and enforces API key
+expiry and rotation grace periods (see the README, Operations).
+
+### Added
+
+- Audit records carry `actorName`, `actorEmail`, `orgName` and `targetLabel` (migration `0003`):
+  the actor's name and e-mail or the API key's name, the organization's name, and this service's
+  targets from its tables (users `Name <e-mail>`, organizations, API keys `Name (sk_<id>)`,
+  invitations by address) or other services' targets from the producer's `meta.targetLabel` /
+  `meta.name`. This service's own records carry the names read in the transaction of the change
+  they describe (`meta.auditLabels`, which the `auth-audit` consumer stores as the names and drops
+  from `meta`; `organization.delete` and `membership.invite.cancel` are recorded before the row
+  goes), so renames, deletions and a relay or consumer backlog (NATS outage, lag) do not change
+  their history. Other services' records get the names as they are when the record arrives. Rows
+  of 0.1.0 show the current names. `pnpm seed:demo` stores the names too.
+- `GET /api/v2/audit-logs` filters `actorEmail` (case-insensitive) and `actionPrefix` (e.g.
+  `membership.`, matched literally).
+- `GET /api/v2/audit-logs/actions?actionPrefix&orgId&from&to` (`audit:read`, same scope): the
+  distinct actions of the range with `count` and `lastAt` (default 30 days, at most 366, at most
+  500 actions), for the filter suggestions.
+- `GET /api/v2/audit-logs.csv` (`audit:read`): the records of the listing's filters as one streamed
+  RFC 4180 file (`Content-Disposition: attachment; filename="audit-logs-<orgId|all>-<from>_<to>.csv"`,
+  exposed cross-origin; `Cache-Control: no-store`), read in keyset batches of 1 000; cells that a
+  spreadsheet would run as formulas get a leading apostrophe (OWASP CSV injection); errors before
+  the first byte are problem details, a failure mid-transfer aborts the connection.
+- `POST /api/v2/organizations/:id/invitations/:invitationId/resend` (`user:manage`, optional body
+  `{ locale }`) → `200 SentInvitationDto`: a new link replaces the old one (which stops working),
+  role and name stay, the role is checked again against the organization's kind. Invitation
+  e-mails have a budget per address and organization: 4 per hour — the invitation and 3 more,
+  whether resent, renewed by `POST …/members` for the pending address, or sent anew after a
+  withdrawal — then `429 RATE_LIMITED` (with `Retry-After`; the previous link keeps working). It
+  is consumed only once the invitation was found in the organization, so ids of another tenant's
+  invitations cannot use it up. Audited as `membership.invite.resend`.
+- `InvitationDto.invitedByName` (current name of the inviting admin).
+- `GET /api/v2/organizations` rows carry `memberCount` and `apiKeyCount` (keys that work now), and
+  `GET /api/v2/organizations/stats?search` (`org:manage`) answers
+  `{ total, byKind: { shipping_company, authority, platform, research } }` over every page.
+- `GET /api/v2/users` accepts `ids=a,b,c` (batch lookup of up to 100 ids) and `orgId` (members of
+  an organization).
+- API keys may expire: `POST /api/v2/api-keys { expiresAt }`, an ISO-8601 UTC timestamp with
+  seconds and `Z` (`2027-01-01T00:00:00Z`, contracts `isIsoDateTime`) in the future; anything else
+  — week or ordinal dates, the basic format, signed years, offsets, times without a zone, `null`,
+  a past time — answers `400 VALIDATION_FAILED` (`field: expiresAt`). Introspection treats the key
+  as inactive from then on. `ApiKeyDto`
+  gains `expiresAt`, `status` (`active` | `expired` | `revoked`), `rotatedAt` and
+  `previousKeyExpiresAt` (migration `0004`).
+- `POST /api/v2/api-keys/:id/rotate { gracePeriodMin? }` (`api_key:manage`): a new secret,
+  returned once, for the same key id and prefix (telemetry binds devices to the key id); the
+  replaced secret keeps working for the grace period (an integer number of minutes, default 24 h,
+  at most 7 days, 0 = at once; `null` answers `400 VALIDATION_FAILED`, it never removes the grace
+  period). The body may be omitted (`requestBody.required: false` in `openapi.json`).
+  An `org_admin` cannot rotate a key whose scopes it could not grant (`403 SCOPE_NOT_GRANTABLE`,
+  e.g. `ais:ingest`); revoked or expired keys answer `409 API_KEY_INACTIVE`. Audited as
+  `api_key.rotate`; `aisits_auth_api_key_introspections_total{outcome="active_previous"}` counts
+  uses of a replaced secret. Housekeeping forgets replaced secrets after their grace period.
+- Rotation of `KEY_ENCRYPTION_SECRET`: `KEY_ENCRYPTION_SECRET_PREVIOUS` (values it sealed still
+  open) and `pnpm rotate:key-secret` (re-seals signing keys and MFA secrets in one transaction).
+
+### Changed
+
+- This service's own audit records go through the transactional outbox (kit
+  `AuditService.enqueue` and `OutboxModule` in per-key mode, migration `0005_audit_outbox.sql`,
+  `src/db/transactions.ts`): each is written in the transaction of the change it describes, so a
+  NATS outage delays it instead of dropping it (it was best effort, counted only in
+  `aisits_audit_failures_total`) and a rolled-back change is never recorded. `membership.invite`,
+  `membership.invite.resend`, `auth.password.reset_request` and `auth.signing_key.rotate` are
+  queued right after the e-mail request or the key store transaction whose outcome they report
+  (durable, not atomic); `auth.login.failed` stays best effort (no outbox row per attempt). E-mail
+  requests stay out of the outbox: they carry the raw link token, which the database never stores.
+- `@darmawanweb/ais-its-contracts` ^0.4.0 and `@darmawanweb/ais-its-nest` ^0.3.0. Metric fields
+  use the kit's `Counter` type (`src/common/metrics.ts` removed); API key hashes come from contracts
+  `hashApiKey` (same SHA-256 hex, now asynchronous).
+- `openapi.json` declares the refresh cookie as the security scheme `refreshCookie`
+  (`apiKey` in the cookie `aisits_rt`, kit `REFRESH_COOKIE_SECURITY_SCHEME`) on refresh and
+  logout, the page maximum of 1 000 000, `uuid` path parameters and the new routes; the bodies of
+  `POST /api-keys/:id/rotate` and `POST …/invitations/:invitationId/resend` are optional
+  (`requestBody.required: false`) and `gracePeriodMin` is an `integer`.
+- Malformed path ids answer `400 VALIDATION_FAILED` with the parameter as `field` (kit
+  `@UuidParam()` instead of `ParseUUIDPipe`).
+- `POST /api/v2/auth/keys/rotate` is guarded by the kit's `@RequirePlatformAdmin()` instead of an
+  in-handler check: other callers get `403 PLATFORM_ADMIN_REQUIRED` (was `403 FORBIDDEN`), and
+  `openapi.json` documents `x-required-roles: ["super_admin"]`.
+- `PATCH /api/v2/organizations/:id` refuses `null` for `name`, `slug` and `kind`
+  (`400 VALIDATION_FAILED`) instead of failing on the `NOT NULL` column.
+- The `auth-audit` consumer dead-letters a record the database can never store (SQLSTATE classes
+  `22`, `23`, `54`, e.g. a target id above the btree index limit) at its first delivery with
+  `DeadLetterError` (`dlq.AUDIT.auth-audit`) instead of retrying it until `maxDeliver`;
+  `aisits_auth_audit_logs_persisted_total` gains `outcome="dead_letter"`.
+- Migrations are resolved from the package (`MIGRATIONS_DIR`) for the service, `pnpm migrate` and
+  `pnpm seed:demo`, whatever the working directory.
+- `TRUSTED_PROXIES`: production guidance (the gateway only) in `.env.example` and the README; the
+  kit warns at boot while production runs with the default.
+
+### Removed
+
+- Local workarounds now provided by the kit: `src/db/errors.ts` (`SanitizedDatabaseError`,
+  `withoutQueryValues` around every `users` write, the local `isUniqueViolation`; the kit sanitizes
+  logs, problem details and DLQ headers and provides `isUniqueViolation`), `src/domain/client-ip.ts`
+  (`normalizeClientIp`; the kit's `clientIp` has the same case table), the `REFRESH_COOKIE_DESCRIPTION`
+  prose in place of a security scheme, and the `@darmawanweb/ais-its-nest` entry of `.pnpmfile.cjs`
+  (the kit no longer declares test peers; the hook now strips `@nestjs/terminus`' optional gRPC
+  peers, as the template does).
+
 ### Security
 
 - `ais:ingest` API keys (the AIS feed shared by every tenant) can only be granted by super admins;
@@ -23,8 +133,15 @@ All notable changes to `ais-its-auth-service` are documented in this file. The f
   way, and the login rehash is a compare-and-set on the old hash.
 - Reset and invitation links are checked before the argon2id hash is computed, and failed
   attempts are throttled (10 / 15 min per IP), so anonymous garbage no longer slows down sign-in.
-- Failed writes of `users` rethrow a `SanitizedDatabaseError` without SQL parameters or driver
-  `detail`: password hashes and sealed MFA secrets no longer reach error logs or responses.
+- Failed database writes no longer put password hashes, sealed MFA secrets or e-mail addresses
+  into logs or responses (the kit's sanitization; regression tests for a failed password write
+  and a duplicate e-mail). Failures the service logs itself — background work (the
+  forgot-password lookup), the periodic jobs (housekeeping, key retirement) and the signing key
+  reload — used drizzle's message, which lists every bound value (e.g. the looked-up e-mail
+  address); they are logged with `sanitizeError` now. So are the failures of the CLIs
+  (`src/common/cli.ts`, exit code 1): `pnpm rotate:key-secret` no longer logs the new sealed MFA
+  secret of a failed re-seal, `pnpm seed:demo` no longer prints the argon2id hash of
+  `SEED_DEMO_PASSWORD` when an insert fails.
 - `pnpm seed:demo` refuses `NODE_ENV=production` unless `SEED_DEMO_ALLOW_PRODUCTION=true` and a
   non-default `SEED_DEMO_PASSWORD` are set, and audits everything it creates.
 
@@ -40,17 +157,15 @@ All notable changes to `ais-its-auth-service` are documented in this file. The f
   neither logs the user out nor turns the retry into a reuse detection.
 - The audit consumer stores events with characters PostgreSQL refuses (U+0000, lone surrogates)
   or absurdly nested `meta` instead of retrying them until they reach the DLQ.
-- `openapi.json` no longer references the undeclared security scheme `aisits_rt`; the cookie is
-  described on the refresh and logout operations.
-
-- The Docker image no longer installs the kit's test-only optional peers (`testcontainers`,
-  `@nestjs/testing` and their tree: dockerode, ssh2, archiver, …): `.pnpmfile.cjs` keeps them out
-  of the production graph (`node_modules` 233 → 200 MB, image 521 → 481 MB).
-
-### Added
-
-- Rotation of `KEY_ENCRYPTION_SECRET`: `KEY_ENCRYPTION_SECRET_PREVIOUS` (values it sealed still
-  open) and `pnpm rotate:key-secret` (re-seals signing keys and MFA secrets in one transaction).
+- Sign-in writes the session, its refresh token and `last_login_at` in one transaction (they were
+  separate statements, so a failure in between left a session without token), and a failed
+  token signature now rolls the new session back. `POST /auth/switch-org` keeps the session's
+  organization when the access token cannot be signed (`503`), instead of switching it without
+  answering a token.
+- `openapi.json` no longer references an undeclared security scheme (`aisits_rt`).
+- The Docker image no longer installs test-only packages (`testcontainers`, `@nestjs/testing`
+  and their tree: dockerode, ssh2, archiver, …), terminus' optional gRPC peers nor
+  `@opentelemetry/sdk-node` (about 460 MB uncompressed, 182 MB of it `node_modules`).
 
 ## [0.1.0] - 2026-11-21
 

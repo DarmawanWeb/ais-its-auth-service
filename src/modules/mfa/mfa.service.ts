@@ -1,7 +1,4 @@
-import {
-  type AuditRequest,
-  AuditService,
-} from '@darmawanweb/ais-its-nest/audit';
+import type { AuditRequest } from '@darmawanweb/ais-its-nest/audit';
 import type { Principal } from '@darmawanweb/ais-its-nest/auth';
 import { InjectRedis, type Redis } from '@darmawanweb/ais-its-nest/redis';
 import { Injectable } from '@nestjs/common';
@@ -9,6 +6,7 @@ import { Injectable } from '@nestjs/common';
 import { AuthErrors } from '../../common/errors.js';
 import { clientInfo, requireUser } from '../../common/principals.js';
 import type { UserRow } from '../../db/database.js';
+import { Transactions } from '../../db/transactions.js';
 import {
   generateTotpSecret,
   TOTP_PARAMETERS,
@@ -44,7 +42,7 @@ export class MfaService {
     private readonly users: UsersRepository,
     private readonly encryption: KeyEncryption,
     private readonly throttle: AuthThrottle,
-    private readonly audit: AuditService,
+    private readonly transactions: Transactions,
     @InjectRedis() private readonly redis: Redis,
   ) {}
 
@@ -72,15 +70,15 @@ export class MfaService {
     await this.throttle.guardMfa(user.id, clientInfo(request).ip, () =>
       this.checkCode(user, code),
     );
-    await this.users.setMfa(user.id, {
-      secretEnc: user.mfaSecretEnc,
-      enabled: true,
+    const secretEnc = user.mfaSecretEnc;
+    await this.transactions.run(async ({ tx, audit }) => {
+      await this.users.setMfa(user.id, { secretEnc, enabled: true }, tx);
+      await audit(
+        { action: 'auth.mfa.enable', targetType: 'user', targetId: user.id },
+        principal,
+        request,
+      );
     });
-    await this.audit.record(
-      { action: 'auth.mfa.enable', targetType: 'user', targetId: user.id },
-      principal,
-      request,
-    );
   }
 
   /** Disables MFA after a valid code. */
@@ -94,12 +92,14 @@ export class MfaService {
     await this.throttle.guardMfa(user.id, clientInfo(request).ip, () =>
       this.checkCode(user, code),
     );
-    await this.users.setMfa(user.id, { secretEnc: null, enabled: false });
-    await this.audit.record(
-      { action: 'auth.mfa.disable', targetType: 'user', targetId: user.id },
-      principal,
-      request,
-    );
+    await this.transactions.run(async ({ tx, audit }) => {
+      await this.users.setMfa(user.id, { secretEnc: null, enabled: false }, tx);
+      await audit(
+        { action: 'auth.mfa.disable', targetType: 'user', targetId: user.id },
+        principal,
+        request,
+      );
+    });
   }
 
   /**

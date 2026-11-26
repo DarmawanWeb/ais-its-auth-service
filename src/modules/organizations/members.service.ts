@@ -6,19 +6,20 @@ import {
 } from '@darmawanweb/ais-its-contracts/api';
 import type { OrgRole } from '@darmawanweb/ais-its-contracts/auth';
 import { type Locale, newId } from '@darmawanweb/ais-its-contracts/domain';
-import {
-  type AuditRequest,
-  AuditService,
-} from '@darmawanweb/ais-its-nest/audit';
+import type { AuditRequest } from '@darmawanweb/ais-its-nest/audit';
 import type { Principal, UserPrincipal } from '@darmawanweb/ais-its-nest/auth';
-import { type Database, InjectDb } from '@darmawanweb/ais-its-nest/db';
+import {
+  type Database,
+  InjectDb,
+  isUniqueViolation,
+} from '@darmawanweb/ais-its-nest/db';
 import { ForbiddenError } from '@darmawanweb/ais-its-nest';
 import { Injectable } from '@nestjs/common';
 
 import { AuthErrors } from '../../common/errors.js';
 import { requireUser } from '../../common/principals.js';
 import type { Executor, OrganizationRow } from '../../db/database.js';
-import { isUniqueViolation } from '../../db/errors.js';
+import { Transactions } from '../../db/transactions.js';
 import type * as schema from '../../db/schema.js';
 import {
   canManageMembers,
@@ -41,6 +42,7 @@ import {
   UsersRepository,
 } from '../accounts/users.repository.js';
 import { InvitationService } from '../passwords/invitation.service.js';
+import { AuthThrottle } from '../throttling/auth-throttle.service.js';
 
 /** `POST /organizations/:id/members`. */
 export interface InviteMemberInput {
@@ -70,13 +72,14 @@ export interface SentInvitation {
 export class MembersService {
   constructor(
     @InjectDb() private readonly db: Database<typeof schema>,
+    private readonly transactions: Transactions,
     private readonly organizations: OrganizationsRepository,
     private readonly memberships: MembershipsRepository,
     private readonly users: UsersRepository,
     private readonly sessions: SessionsRepository,
     private readonly invitationRows: InvitationsRepository,
     private readonly invitations: InvitationService,
-    private readonly audit: AuditService,
+    private readonly throttle: AuthThrottle,
   ) {}
 
   /** One page of the organization's members. */
@@ -101,10 +104,15 @@ export class MembersService {
    * The answer, the invitation list and the audit record are the same in
    * both cases and show only what the admin typed, so an admin learns
    * nothing about accounts outside the organization. Inviting a pending
-   * address again renews the link (the way to resend an invitation).
+   * address again renews the link (the way to resend an invitation). Every
+   * invitation e-mail counts against the address's budget in the
+   * organization (`AuthThrottle.consumeInvitationEmail`, shared with
+   * {@link resendInvitation}), consumed in the transaction once the checks
+   * passed, so a refusal leaves the previous link working.
    *
    * @throws {ConflictError} `409 MEMBER_ALREADY_EXISTS` for a member of the organization.
    * @throws {DomainError} `422 ROLE_NOT_GRANTABLE` for roles the organization's kind cannot grant.
+   * @throws {RateLimitedError} `429 RATE_LIMITED` beyond the invitation e-mail budget.
    */
   async invite(
     orgId: string,
@@ -135,6 +143,9 @@ export class MembersService {
         // A member that never activated the account may be invited again.
         if (existing !== undefined && user.status !== 'invited')
           throw AuthErrors.memberExists(orgId);
+        // Before the upsert renews a pending invitation's link: a 429 rolls
+        // the whole invitation back (new and existing addresses alike).
+        await this.throttle.consumeInvitationEmail(orgId, user.email);
         const invitation = await this.invitationRows.upsert(
           {
             id: newId(),
@@ -161,8 +172,10 @@ export class MembersService {
       locale: input.locale,
     });
     // The invitation, not the account, is the target: the organization's
-    // audit log must not reveal the id of an account outside it.
-    await this.audit.record(
+    // audit log must not reveal the id of an account outside it. Queued
+    // after the e-mail request, whose outcome it reports (durable, not
+    // atomic with the invitation, which committed before the request).
+    await this.transactions.record(
       {
         action: 'membership.invite',
         targetType: 'membership_invitation',
@@ -173,7 +186,93 @@ export class MembersService {
       actor,
       request,
     );
-    return { record: { invitation, email: user.email }, invitationSent };
+    return {
+      record: { invitation, email: user.email, invitedByName: actor.name },
+      invitationSent,
+    };
+  }
+
+  /**
+   * Sends a pending (or expired) invitation again: a new link valid
+   * `INVITE_TTL_HOURS` replaces the previous one, which stops working; role
+   * and name stay, the sender becomes the inviter. The role is checked
+   * again against the organization's kind (under its share lock, then the
+   * invitation's row lock: the lock order of every organization change).
+   * The e-mail counts against the address's budget in the organization
+   * (shared with {@link invite}: the invitation and 3 more per hour),
+   * consumed only once the invitation was found in `orgId`, so an admin of
+   * another organization cannot use it up with ids of foreign invitations.
+   *
+   * @throws {NotFoundError} `404 INVITATION_NOT_FOUND` (also once accepted or withdrawn).
+   * @throws {DomainError} `422 ROLE_NOT_GRANTABLE` when the kind changed since.
+   * @throws {RateLimitedError} `429 RATE_LIMITED` beyond the resend limit.
+   */
+  async resendInvitation(
+    orgId: string,
+    invitationId: string,
+    locale: Locale | undefined,
+    principal: Principal,
+    request: AuditRequest,
+  ): Promise<SentInvitation> {
+    const { actor } = await this.manageable(orgId, principal);
+    const token = this.invitations.newToken();
+    const { invitation, user, organization } = await this.db.transaction(
+      async (tx) => {
+        const organization = await this.organizations.lockForShare(orgId, tx);
+        if (organization === undefined)
+          throw AuthErrors.organizationNotFound(orgId);
+        const pending = await this.invitationRows.lockInOrg(
+          invitationId,
+          orgId,
+          tx,
+        );
+        if (pending === undefined)
+          throw AuthErrors.invitationNotFound(orgId, invitationId);
+        if (!isRoleGrantable(organization.kind, pending.role))
+          throw AuthErrors.roleNotGrantable(pending.role, organization.kind);
+        const user = await this.users.findById(pending.userId, tx);
+        if (user === undefined)
+          throw AuthErrors.invitationNotFound(orgId, invitationId);
+        // Only now that the invitation is known to be this organization's:
+        // a 429 rolls the renewal back, the previous link keeps working.
+        await this.throttle.consumeInvitationEmail(orgId, user.email);
+        const invitation = await this.invitationRows.renew(
+          invitationId,
+          {
+            tokenHash: token.tokenHash,
+            expiresAt: token.expiresAt,
+            invitedBy: actor.id,
+          },
+          tx,
+        );
+        return { invitation, user, organization };
+      },
+    );
+    const invitationSent = await this.invitations.send({
+      to: user.email,
+      recipientName: user.name,
+      organization,
+      role: invitation.role,
+      invitedBy: actor.name,
+      token,
+      locale,
+    });
+    // After the e-mail request, whose outcome it reports (see invite).
+    await this.transactions.record(
+      {
+        action: 'membership.invite.resend',
+        targetType: 'membership_invitation',
+        targetId: invitation.id,
+        orgId,
+        meta: { role: invitation.role, invitationSent },
+      },
+      actor,
+      request,
+    );
+    return {
+      record: { invitation, email: user.email, invitedByName: actor.name },
+      invitationSent,
+    };
   }
 
   /** One page of the organization's pending (and expired) invitations. */
@@ -198,20 +297,29 @@ export class MembersService {
     request: AuditRequest,
   ): Promise<void> {
     const { actor } = await this.manageable(orgId, principal);
-    const deleted = await this.invitationRows.deleteInOrg(invitationId, orgId);
-    if (deleted === undefined)
-      throw AuthErrors.invitationNotFound(orgId, invitationId);
-    await this.audit.record(
-      {
-        action: 'membership.invite.cancel',
-        targetType: 'membership_invitation',
-        targetId: invitationId,
+    await this.transactions.run(async ({ tx, audit }) => {
+      const pending = await this.invitationRows.lockInOrg(
+        invitationId,
         orgId,
-        meta: { role: deleted.role },
-      },
-      actor,
-      request,
-    );
+        tx,
+      );
+      if (pending === undefined)
+        throw AuthErrors.invitationNotFound(orgId, invitationId);
+      // Before the delete: the record captures the invited address as its
+      // target label (it commits or rolls back with the delete).
+      await audit(
+        {
+          action: 'membership.invite.cancel',
+          targetType: 'membership_invitation',
+          targetId: invitationId,
+          orgId,
+          meta: { role: pending.role },
+        },
+        actor,
+        request,
+      );
+      await this.invitationRows.deleteInOrg(invitationId, orgId, tx);
+    });
   }
 
   /** Changes a member's role (never demoting the last `org_admin`). */
@@ -223,7 +331,7 @@ export class MembersService {
     request: AuditRequest,
   ): Promise<MemberRecord> {
     const { actor } = await this.manageable(orgId, principal);
-    const change = await this.db.transaction(async (tx) => {
+    return this.transactions.run(async ({ tx, audit }) => {
       await this.assertGrantableLocked(orgId, role, tx);
       const { membership, user } = await this.lockedMember(
         orgId,
@@ -231,8 +339,7 @@ export class MembersService {
         role,
         tx,
       );
-      if (membership.role === role)
-        return { record: { membership, user }, from: role };
+      if (membership.role === role) return { membership, user };
       const updated = await this.memberships.updateRole(
         userId,
         orgId,
@@ -240,22 +347,19 @@ export class MembersService {
         tx,
       );
       if (updated === undefined) throw AuthErrors.memberNotFound(orgId, userId);
-      return { record: { membership: updated, user }, from: membership.role };
-    });
-    if (change.from !== role) {
-      await this.audit.record(
+      await audit(
         {
           action: 'membership.update',
           targetType: 'user',
           targetId: userId,
           orgId,
-          meta: { from: change.from, to: role },
+          meta: { from: membership.role, to: role },
         },
         actor,
         request,
       );
-    }
-    return change.record;
+      return { membership: updated, user };
+    });
   }
 
   /** Removes a member (never the last `org_admin`) and revokes their sessions in the organization. */
@@ -266,7 +370,7 @@ export class MembersService {
     request: AuditRequest,
   ): Promise<void> {
     const { actor } = await this.manageable(orgId, principal);
-    const removed = await this.db.transaction(async (tx) => {
+    await this.transactions.run(async ({ tx, audit }) => {
       const { membership } = await this.lockedMember(orgId, userId, null, tx);
       await this.memberships.delete(userId, orgId, tx);
       const revokedSessions = await this.sessions.revokeOfUser(
@@ -274,19 +378,18 @@ export class MembersService {
         { orgId },
         tx,
       );
-      return { role: membership.role, revokedSessions };
+      await audit(
+        {
+          action: 'membership.delete',
+          targetType: 'user',
+          targetId: userId,
+          orgId,
+          meta: { role: membership.role, revokedSessions },
+        },
+        actor,
+        request,
+      );
     });
-    await this.audit.record(
-      {
-        action: 'membership.delete',
-        targetType: 'user',
-        targetId: userId,
-        orgId,
-        meta: removed,
-      },
-      actor,
-      request,
-    );
   }
 
   /** The organization when the principal may manage its members. */

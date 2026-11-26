@@ -7,6 +7,7 @@ import {
   desc,
   eq,
   ilike,
+  inArray,
   isNotNull,
   ne,
   or,
@@ -19,10 +20,9 @@ import {
   type Executor,
   type UserRow,
 } from '../../db/database.js';
-import { withoutQueryValues } from '../../db/errors.js';
 import * as schema from '../../db/schema.js';
 
-const { users } = schema;
+const { memberships, users } = schema;
 
 /** Status of an account. */
 export type UserStatus = UserRow['status'];
@@ -42,6 +42,10 @@ export interface UserFilter {
   /** Case-insensitive substring of the e-mail or name. */
   readonly search?: string | undefined;
   readonly status?: UserStatus | undefined;
+  /** Only these users (batch lookup). */
+  readonly ids?: readonly string[] | undefined;
+  /** Only members of this organization. */
+  readonly orgId?: string | undefined;
 }
 
 /** Name of the unique index on `lower(email)` (`0001_init.sql`). */
@@ -49,9 +53,11 @@ export const USER_EMAIL_CONSTRAINT = 'users_email_key';
 
 /**
  * Drizzle access to `users`. E-mails are stored normalized (lowercase).
- * Every write goes through `withoutQueryValues`: a failed query must not
- * put the argon2id hash or the sealed MFA secret it binds (or a row the
- * driver echoes in its `detail`) into logs or error responses.
+ * Writes bind secrets (argon2id hashes, sealed MFA secrets): a failed query
+ * rethrows drizzle's `DrizzleQueryError`, which carries them in its message
+ * and `params`, and the kit strips them (with the driver's `detail`) from
+ * every log line, problem response and DLQ header (`sanitizeError`). Code
+ * that logs such an error itself logs `{ err: sanitizeError(error) }`.
  */
 @Injectable()
 export class UsersRepository {
@@ -99,9 +105,7 @@ export class UsersRepository {
 
   /** Inserts a user; a taken e-mail violates {@link USER_EMAIL_CONSTRAINT}. */
   async insert(user: NewUser, executor: Executor = this.db): Promise<UserRow> {
-    const [row] = await withoutQueryValues('Creating the user', () =>
-      executor.insert(users).values(user).returning(),
-    );
+    const [row] = await executor.insert(users).values(user).returning();
     if (row === undefined)
       throw new Error('INSERT … RETURNING returned no row');
     return row;
@@ -145,17 +149,15 @@ export class UsersRepository {
     status: UserStatus | undefined,
     executor: Executor = this.db,
   ): Promise<boolean> {
-    const rows = await withoutQueryValues('Storing the password', () =>
-      executor
-        .update(users)
-        .set({
-          passwordHash,
-          ...(status === undefined ? {} : { status }),
-          updatedAt: sql`now()`,
-        })
-        .where(and(eq(users.id, id), ne(users.status, 'disabled')))
-        .returning({ id: users.id }),
-    );
+    const rows = await executor
+      .update(users)
+      .set({
+        passwordHash,
+        ...(status === undefined ? {} : { status }),
+        updatedAt: sql`now()`,
+      })
+      .where(and(eq(users.id, id), ne(users.status, 'disabled')))
+      .returning({ id: users.id });
     return rows.length > 0;
   }
 
@@ -169,13 +171,11 @@ export class UsersRepository {
     expectedHash: string,
     passwordHash: string,
   ): Promise<boolean> {
-    const rows = await withoutQueryValues('Rehashing the password', () =>
-      this.db
-        .update(users)
-        .set({ passwordHash, updatedAt: sql`now()` })
-        .where(and(eq(users.id, id), eq(users.passwordHash, expectedHash)))
-        .returning({ id: users.id }),
-    );
+    const rows = await this.db
+      .update(users)
+      .set({ passwordHash, updatedAt: sql`now()` })
+      .where(and(eq(users.id, id), eq(users.passwordHash, expectedHash)))
+      .returning({ id: users.id });
     return rows.length > 0;
   }
 
@@ -185,36 +185,34 @@ export class UsersRepository {
     status: UserStatus,
     executor: Executor = this.db,
   ): Promise<UserRow | undefined> {
-    const [row] = await withoutQueryValues('Changing the status', () =>
-      executor
-        .update(users)
-        .set({ status, updatedAt: sql`now()` })
-        .where(eq(users.id, id))
-        .returning(),
-    );
+    const [row] = await executor
+      .update(users)
+      .set({ status, updatedAt: sql`now()` })
+      .where(eq(users.id, id))
+      .returning();
     return row;
   }
 
   /** Changes the display name; `undefined` when no user matched. */
-  async setName(id: string, name: string): Promise<UserRow | undefined> {
-    const [row] = await withoutQueryValues('Renaming the user', () =>
-      this.db
-        .update(users)
-        .set({ name, updatedAt: sql`now()` })
-        .where(eq(users.id, id))
-        .returning(),
-    );
+  async setName(
+    id: string,
+    name: string,
+    executor: Executor = this.db,
+  ): Promise<UserRow | undefined> {
+    const [row] = await executor
+      .update(users)
+      .set({ name, updatedAt: sql`now()` })
+      .where(eq(users.id, id))
+      .returning();
     return row;
   }
 
   /** Records a successful sign-in. */
-  async recordLogin(id: string): Promise<void> {
-    await withoutQueryValues('Recording the sign-in', () =>
-      this.db
-        .update(users)
-        .set({ lastLoginAt: sql`now()` })
-        .where(eq(users.id, id)),
-    );
+  async recordLogin(id: string, executor: Executor = this.db): Promise<void> {
+    await executor
+      .update(users)
+      .set({ lastLoginAt: sql`now()` })
+      .where(eq(users.id, id));
   }
 
   /**
@@ -224,17 +222,16 @@ export class UsersRepository {
   async setMfa(
     id: string,
     mfa: { readonly secretEnc: string | null; readonly enabled: boolean },
+    executor: Executor = this.db,
   ): Promise<void> {
-    await withoutQueryValues('Storing the MFA secret', () =>
-      this.db
-        .update(users)
-        .set({
-          mfaSecretEnc: mfa.secretEnc,
-          mfaEnabled: mfa.enabled,
-          updatedAt: sql`now()`,
-        })
-        .where(eq(users.id, id)),
-    );
+    await executor
+      .update(users)
+      .set({
+        mfaSecretEnc: mfa.secretEnc,
+        mfaEnabled: mfa.enabled,
+        updatedAt: sql`now()`,
+      })
+      .where(eq(users.id, id));
   }
 
   /** Every sealed MFA secret (pending or enabled), locked for a re-seal (`pnpm rotate:key-secret`). */
@@ -260,12 +257,10 @@ export class UsersRepository {
     mfaSecretEnc: string,
     tx: Executor,
   ): Promise<void> {
-    await withoutQueryValues('Storing the MFA secret', () =>
-      tx
-        .update(users)
-        .set({ mfaSecretEnc, updatedAt: sql`now()` })
-        .where(eq(users.id, id)),
-    );
+    await tx
+      .update(users)
+      .set({ mfaSecretEnc, updatedAt: sql`now()` })
+      .where(eq(users.id, id));
   }
 }
 
@@ -279,5 +274,15 @@ function filterConditions(filter: UserFilter): (SQL | undefined)[] {
       ? undefined
       : or(ilike(users.email, pattern), ilike(users.name, pattern)),
     filter.status === undefined ? undefined : eq(users.status, filter.status),
+    filter.ids === undefined ? undefined : inArray(users.id, [...filter.ids]),
+    filter.orgId === undefined ? undefined : isMemberOf(filter.orgId),
   ];
+}
+
+/**
+ * The user has a membership in `orgId` (explicit references: drizzle's
+ * `exists()` does not parenthesize a raw subquery).
+ */
+function isMemberOf(orgId: string): SQL {
+  return sql`EXISTS (SELECT 1 FROM ${memberships} m WHERE m.user_id = ${users}.id AND m.org_id = ${orgId}::uuid)`;
 }

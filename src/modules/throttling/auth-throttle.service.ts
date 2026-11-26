@@ -34,6 +34,12 @@ export const THROTTLE_LIMITS = Object.freeze({
   forgotPerEmail: { limit: 3, windowMs: 60 * MINUTE_MS },
   /** Failed password resets and invitation acceptances (bad links) per client IP. */
   resetPerIp: { limit: 10, windowMs: 15 * MINUTE_MS },
+  /**
+   * Invitation e-mails per invited address and organization: the invitation
+   * and 3 more, whether resent (`…/resend`), renewed by inviting the pending
+   * address again, or sent anew after a withdrawal (`429` beyond).
+   */
+  invitationEmailsPerAddress: { limit: 4, windowMs: 60 * MINUTE_MS },
 });
 
 const THROTTLED_DETAIL = 'Too many failed attempts; try again later';
@@ -53,6 +59,7 @@ export class AuthThrottle {
   private readonly forgotIp: FixedWindowRateLimiter;
   private readonly forgotEmail: SlidingWindowRateLimiter;
   private readonly resetIp: FixedWindowRateLimiter;
+  private readonly invitationEmails: SlidingWindowRateLimiter;
 
   constructor(@InjectRedis() redis: Redis) {
     this.loginEmail = new FixedWindowRateLimiter(redis, {
@@ -83,6 +90,34 @@ export class AuthThrottle {
       name: 'reset-ip',
       ...THROTTLE_LIMITS.resetPerIp,
     });
+    this.invitationEmails = new SlidingWindowRateLimiter(redis, {
+      name: 'invitation-email',
+      ...THROTTLE_LIMITS.invitationEmailsPerAddress,
+    });
+  }
+
+  /**
+   * Counts an invitation e-mail of an organization to an address, so an
+   * admin cannot flood an address through the platform's mailer, whichever
+   * way the e-mail goes out (invite, invite again, resend, withdraw and
+   * invite). Call it only once the invitation was found in `orgId` and is
+   * about to be sent: the key is the organization and the address, so
+   * nobody outside the organization can use up its budget.
+   *
+   * @throws {RateLimitedError} `429 RATE_LIMITED` (with `Retry-After`) beyond
+   *   {@link THROTTLE_LIMITS}.invitationEmailsPerAddress.
+   */
+  async consumeInvitationEmail(orgId: string, email: string): Promise<void> {
+    const result = await this.invitationEmails.consume(
+      `${orgId}:${emailKey(email)}`,
+    );
+    if (!result.allowed) {
+      throw new RateLimitedError({
+        retryAfterSeconds: result.retryAfterMs / 1000,
+        detail:
+          'This address was sent invitations of this organization too often; try again later',
+      });
+    }
   }
 
   /**

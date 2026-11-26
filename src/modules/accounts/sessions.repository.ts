@@ -147,8 +147,12 @@ export class SessionsRepository {
   }
 
   /** Changes the active organization of a session. */
-  async setOrg(id: string, orgId: string | null): Promise<boolean> {
-    const rows = await this.db
+  async setOrg(
+    id: string,
+    orgId: string | null,
+    executor: Executor = this.db,
+  ): Promise<boolean> {
+    const rows = await executor
       .update(sessions)
       .set({ orgId, lastUsedAt: sql`now()` })
       .where(and(eq(sessions.id, id), isNull(sessions.revokedAt)))
@@ -167,8 +171,12 @@ export class SessionsRepository {
   }
 
   /** Revokes one of the user's own sessions; `false` when it is not theirs or not active. */
-  async revokeOwn(userId: string, id: string): Promise<boolean> {
-    const rows = await this.db
+  async revokeOwn(
+    userId: string,
+    id: string,
+    executor: Executor = this.db,
+  ): Promise<boolean> {
+    const rows = await executor
       .update(sessions)
       .set({ revokedAt: sql`now()` })
       .where(

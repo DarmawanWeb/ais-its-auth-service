@@ -2,17 +2,30 @@ import type { OrgRole } from '@darmawanweb/ais-its-contracts/auth';
 import { type Database, InjectDb } from '@darmawanweb/ais-its-nest/db';
 import { Injectable } from '@nestjs/common';
 import { and, count, desc, eq, gt, lt, sql } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
 
 import type { Executor, MembershipInvitationRow } from '../../db/database.js';
 import * as schema from '../../db/schema.js';
 
 const { membershipInvitations, users } = schema;
 
+/** The inviting admin (`invited_by`), for the name shown with an invitation. */
+const inviters = alias(users, 'inviter');
+
 /** An invitation as the organization sees it: what its admin typed, and the address. */
 export interface InvitationRecord {
   readonly invitation: MembershipInvitationRow;
   /** The invited address (normalized, as the admin typed it). */
   readonly email: string;
+  /** Current display name of the inviting admin (`null` once that account is deleted). */
+  readonly invitedByName: string | null;
+}
+
+/** A renewed link of an invitation (`POST …/invitations/:invitationId/resend`). */
+export interface InvitationRenewal {
+  readonly tokenHash: string;
+  readonly expiresAt: Date;
+  readonly invitedBy: string;
 }
 
 /** A new or renewed invitation. */
@@ -61,6 +74,51 @@ export class InvitationsRepository {
     return row;
   }
 
+  /** An invitation of `orgId`, locked until the end of the transaction. */
+  async lockInOrg(
+    id: string,
+    orgId: string,
+    tx: Executor,
+  ): Promise<MembershipInvitationRow | undefined> {
+    const [row] = await tx
+      .select()
+      .from(membershipInvitations)
+      .where(
+        and(
+          eq(membershipInvitations.id, id),
+          eq(membershipInvitations.orgId, orgId),
+        ),
+      )
+      .for('update')
+      .limit(1);
+    return row;
+  }
+
+  /**
+   * Replaces the link of an invitation (new token and expiry; the previous
+   * link stops working) and records who sent it; role, name and
+   * `created_at` stay.
+   */
+  async renew(
+    id: string,
+    renewal: InvitationRenewal,
+    tx: Executor,
+  ): Promise<MembershipInvitationRow> {
+    const [row] = await tx
+      .update(membershipInvitations)
+      .set({
+        tokenHash: renewal.tokenHash,
+        expiresAt: renewal.expiresAt,
+        invitedBy: renewal.invitedBy,
+        updatedAt: sql`now()`,
+      })
+      .where(eq(membershipInvitations.id, id))
+      .returning();
+    if (row === undefined)
+      throw new Error('UPDATE … RETURNING returned no row');
+    return row;
+  }
+
   /** The unexpired invitation of a token hash (no lock: a cheap pre-check). */
   async findRedeemable(
     tokenHash: string,
@@ -102,9 +160,14 @@ export class InvitationsRepository {
     const where = eq(membershipInvitations.orgId, orgId);
     const [rows, totals] = await Promise.all([
       this.db
-        .select({ invitation: membershipInvitations, email: users.email })
+        .select({
+          invitation: membershipInvitations,
+          email: users.email,
+          invitedByName: inviters.name,
+        })
         .from(membershipInvitations)
         .innerJoin(users, eq(users.id, membershipInvitations.userId))
+        .leftJoin(inviters, eq(inviters.id, membershipInvitations.invitedBy))
         .where(where)
         .orderBy(
           desc(membershipInvitations.createdAt),
@@ -133,8 +196,9 @@ export class InvitationsRepository {
   async deleteInOrg(
     id: string,
     orgId: string,
+    executor: Executor = this.db,
   ): Promise<MembershipInvitationRow | undefined> {
-    const [row] = await this.db
+    const [row] = await executor
       .delete(membershipInvitations)
       .where(
         and(

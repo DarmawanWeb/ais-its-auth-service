@@ -1,4 +1,5 @@
 import type { Logger } from '@nestjs/common';
+import { DrizzleQueryError } from 'drizzle-orm/errors';
 import { describe, expect, it, vi } from 'vitest';
 
 import { BackgroundWork } from './background-work.js';
@@ -43,7 +44,35 @@ describe('BackgroundWork', () => {
     });
     await work.drain();
     expect(order).toEqual(['first', 'second']);
-    expect(error).toHaveBeenCalledWith('second failed: boom');
+    expect(error).toHaveBeenCalledWith(
+      { err: expect.any(Error) as Error },
+      'second failed: boom',
+    );
     expect(work.size).toBe(0);
+  });
+
+  it('logs a database failure without the values its statement bound', async () => {
+    const error = vi.fn();
+    const work = new BackgroundWork(logger(error));
+    work.run('Password reset request', () =>
+      Promise.reject(
+        new DrizzleQueryError(
+          'select "id" from "auth"."users" where lower("email") = lower($1)',
+          ['victim@example.com'],
+          Object.assign(
+            new Error('canceling statement due to statement timeout'),
+            { code: '57014', severity: 'ERROR' },
+          ),
+        ),
+      ),
+    );
+    await work.drain();
+    expect(error).toHaveBeenCalledWith(
+      { err: expect.any(Error) as Error },
+      'Password reset request failed: canceling statement due to statement timeout',
+    );
+    expect(JSON.stringify(error.mock.calls)).not.toContain(
+      'victim@example.com',
+    );
   });
 });

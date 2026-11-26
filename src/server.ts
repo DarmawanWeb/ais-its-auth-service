@@ -5,6 +5,7 @@ import { bootstrapService, loadConfig } from '@darmawanweb/ais-its-nest';
 import { AppModule } from './app.module.js';
 import { configSchema } from './config.js';
 import { OPENAPI } from './openapi.options.js';
+import { EXPOSED_HEADERS } from './service.js';
 
 // Connect, migrate and ensure streams (onModuleInit) → signing key, bootstrap
 // admin, consumers (onApplicationBootstrap) → listen on HOST:PORT. SIGTERM
@@ -15,4 +16,5 @@ await bootstrapService({
   config: loadConfig(configSchema),
   openapi: OPENAPI,
   cookies: true,
+  cors: { exposedHeaders: EXPOSED_HEADERS },
 });

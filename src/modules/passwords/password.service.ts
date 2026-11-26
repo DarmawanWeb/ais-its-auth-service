@@ -1,11 +1,7 @@
 import type { Locale } from '@darmawanweb/ais-its-contracts/domain';
 import { InjectConfig, ValidationFailedError } from '@darmawanweb/ais-its-nest';
-import {
-  type AuditRequest,
-  AuditService,
-} from '@darmawanweb/ais-its-nest/audit';
+import type { AuditEntry, AuditRequest } from '@darmawanweb/ais-its-nest/audit';
 import type { Principal } from '@darmawanweb/ais-its-nest/auth';
-import { type Database, InjectDb } from '@darmawanweb/ais-its-nest/db';
 import {
   type BeforeApplicationShutdown,
   Injectable,
@@ -21,7 +17,7 @@ import type {
   MembershipInvitationRow,
   UserRow,
 } from '../../db/database.js';
-import type * as schema from '../../db/schema.js';
+import { Transactions } from '../../db/transactions.js';
 import { normalizeEmail, tokenLink } from '../../domain/identity.js';
 import { checkPasswordPolicy } from '../../domain/password-policy.js';
 import { SessionsRepository } from '../accounts/sessions.repository.js';
@@ -68,7 +64,7 @@ export class PasswordService implements BeforeApplicationShutdown {
   private readonly background = new BackgroundWork(new Logger('Passwords'));
 
   constructor(
-    @InjectDb() private readonly db: Database<typeof schema>,
+    private readonly transactions: Transactions,
     @InjectConfig() private readonly config: Config,
     private readonly users: UsersRepository,
     private readonly sessions: SessionsRepository,
@@ -77,7 +73,6 @@ export class PasswordService implements BeforeApplicationShutdown {
     private readonly invitations: InvitationService,
     private readonly emails: EmailRequester,
     private readonly throttle: AuthThrottle,
-    private readonly audit: AuditService,
   ) {}
 
   /**
@@ -135,54 +130,27 @@ export class PasswordService implements BeforeApplicationShutdown {
     request: ClientRequest,
   ): Promise<void> {
     assertPasswordPolicy('password', password);
-    const outcome = await this.throttle.guardReset(
-      clientInfo(request).ip,
-      async () => {
-        const kind = await this.redeemableKind(token);
-        if (kind === undefined) throw AuthErrors.invalidToken();
-        const passwordHash = await this.hasher.hash(password);
-        const result = await this.db.transaction((tx) =>
+    await this.throttle.guardReset(clientInfo(request).ip, async () => {
+      const kind = await this.redeemableKind(token);
+      if (kind === undefined) throw AuthErrors.invalidToken();
+      const passwordHash = await this.hasher.hash(password);
+      const result = await this.transactions.run(async ({ tx, audit }) => {
+        const redeemed =
           kind === 'reset'
-            ? this.resetLocked(token, passwordHash, tx)
-            : this.acceptLocked(token, passwordHash, tx),
-        );
-        if (result.kind === 'invalid') throw AuthErrors.invalidToken();
-        if (result.kind === 'disabled') throw AuthErrors.accountDisabled();
-        return result;
-      },
-    );
-    const actor = actorOf(outcome.user, { id: outcome.user.id, orgId: null });
-    if (outcome.kind === 'reset') {
-      await this.audit.record(
-        {
-          action: 'auth.password.reset',
-          targetType: 'user',
-          targetId: outcome.user.id,
-          orgId: null,
-          meta: { revokedSessions: outcome.revokedSessions },
-        },
-        actor,
-        request,
-      );
-      return;
-    }
-    await this.audit.record(
-      {
-        action: 'auth.invite.accept',
-        targetType: 'user',
-        targetId: outcome.user.id,
-        orgId: outcome.invitation.orgId,
-        meta: {
-          invitationId: outcome.invitation.id,
-          role: outcome.invitation.role,
-          accountActivated: outcome.user.status === 'invited',
-          membershipCreated: outcome.membershipCreated,
-          revokedSessions: outcome.revokedSessions,
-        },
-      },
-      actor,
-      request,
-    );
+            ? await this.resetLocked(token, passwordHash, tx)
+            : await this.acceptLocked(token, passwordHash, tx);
+        if (redeemed.kind === 'reset' || redeemed.kind === 'accepted') {
+          await audit(
+            redeemedEntry(redeemed),
+            actorOf(redeemed.user, { id: redeemed.user.id, orgId: null }),
+            request,
+          );
+        }
+        return redeemed;
+      });
+      if (result.kind === 'invalid') throw AuthErrors.invalidToken();
+      if (result.kind === 'disabled') throw AuthErrors.accountDisabled();
+    });
   }
 
   /**
@@ -213,27 +181,28 @@ export class PasswordService implements BeforeApplicationShutdown {
     });
     assertPasswordPolicy('newPassword', newPassword);
     const passwordHash = await this.hasher.hash(newPassword);
-    const revoked = await this.db.transaction(async (tx) => {
+    const changed = await this.transactions.run(async ({ tx, audit }) => {
       // Conditional write: an account disabled meanwhile keeps its password.
       if (!(await this.users.setPassword(user.id, passwordHash, undefined, tx)))
-        return undefined;
-      return this.sessions.revokeOfUser(
+        return false;
+      const revokedSessions = await this.sessions.revokeOfUser(
         user.id,
         { exceptSessionId: actor.sessionId },
         tx,
       );
+      await audit(
+        {
+          action: 'auth.password.change',
+          targetType: 'user',
+          targetId: user.id,
+          meta: { revokedSessions },
+        },
+        actor,
+        request,
+      );
+      return true;
     });
-    if (revoked === undefined) throw AuthErrors.accountDisabled();
-    await this.audit.record(
-      {
-        action: 'auth.password.change',
-        targetType: 'user',
-        targetId: user.id,
-        meta: { revokedSessions: revoked },
-      },
-      actor,
-      request,
-    );
+    if (!changed) throw AuthErrors.accountDisabled();
   }
 
   /** Which kind of link `token` is, when it can be redeemed now (no lock, no write). */
@@ -331,12 +300,17 @@ export class PasswordService implements BeforeApplicationShutdown {
     await this.recordResetRequest(user, sent, request);
   }
 
+  /**
+   * Records a reset request with the outcome of its e-mail request: queued
+   * in the outbox right after it (durable, but not atomic with the token,
+   * which `OneTimeTokens.issue` committed before the e-mail was requested).
+   */
   private async recordResetRequest(
     user: UserRow,
     sent: boolean,
     request: ClientRequest,
   ): Promise<void> {
-    await this.audit.record(
+    await this.transactions.record(
       {
         action: 'auth.password.reset_request',
         targetType: 'user',
@@ -354,4 +328,33 @@ export class PasswordService implements BeforeApplicationShutdown {
 export function assertPasswordPolicy(field: string, password: string): void {
   const violations = checkPasswordPolicy(password);
   if (violations.length > 0) throw AuthErrors.weakPassword(field, violations);
+}
+
+/** The audit entry of a redeemed reset or invitation link. */
+function redeemedEntry(
+  redeemed: Extract<RedeemOutcome, { kind: 'reset' | 'accepted' }>,
+): AuditEntry {
+  if (redeemed.kind === 'reset') {
+    return {
+      action: 'auth.password.reset',
+      targetType: 'user',
+      targetId: redeemed.user.id,
+      orgId: null,
+      meta: { revokedSessions: redeemed.revokedSessions },
+    };
+  }
+  return {
+    action: 'auth.invite.accept',
+    targetType: 'user',
+    targetId: redeemed.user.id,
+    orgId: redeemed.invitation.orgId,
+    meta: {
+      invitationId: redeemed.invitation.id,
+      role: redeemed.invitation.role,
+      // The locked row, before the acceptance activated it.
+      accountActivated: redeemed.user.status === 'invited',
+      membershipCreated: redeemed.membershipCreated,
+      revokedSessions: redeemed.revokedSessions,
+    },
+  };
 }

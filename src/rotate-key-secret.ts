@@ -7,6 +7,7 @@ import {
 } from '@darmawanweb/ais-its-nest/db';
 import { drizzle } from 'drizzle-orm/node-postgres';
 
+import { logPoolError, runCliTask } from './common/cli.js';
 import { configSchema } from './config.js';
 import * as schema from './db/schema.js';
 import { UsersRepository } from './modules/accounts/users.repository.js';
@@ -23,24 +24,29 @@ const logger = createLogger({
   level: config.LOG_LEVEL,
   pretty: config.LOG_PRETTY,
 });
-const pool = createDatabasePool(databasePoolSettings(config), (error) => {
-  logger.error({ err: error }, 'Database pool error');
-});
+const pool = createDatabasePool(
+  databasePoolSettings(config),
+  logPoolError(logger),
+);
 try {
-  const db = drizzle(pool, { schema });
-  const result = await new KeySecretRotation(
-    db,
-    new KeyEncryption(config),
-    new SigningKeysRepository(db),
-    new UsersRepository(db),
-  ).run();
-  logger.info(
-    result,
-    `Re-sealed ${result.signingKeys} signing keys and ${result.mfaSecrets} MFA secrets (${result.alreadyCurrent} already current); remove KEY_ENCRYPTION_SECRET_PREVIOUS now`,
+  // A failed write must not log the new sealed MFA secret it bound.
+  await runCliTask(
+    logger,
+    'Rotating KEY_ENCRYPTION_SECRET failed',
+    async () => {
+      const db = drizzle(pool, { schema });
+      const result = await new KeySecretRotation(
+        db,
+        new KeyEncryption(config),
+        new SigningKeysRepository(db),
+        new UsersRepository(db),
+      ).run();
+      logger.info(
+        result,
+        `Re-sealed ${result.signingKeys} signing keys and ${result.mfaSecrets} MFA secrets (${result.alreadyCurrent} already current); remove KEY_ENCRYPTION_SECRET_PREVIOUS now`,
+      );
+    },
   );
-} catch (error) {
-  logger.error({ err: error }, 'Rotating KEY_ENCRYPTION_SECRET failed');
-  process.exitCode = 1;
 } finally {
   await pool.end();
 }

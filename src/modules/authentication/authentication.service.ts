@@ -3,14 +3,17 @@ import {
   AuditService,
 } from '@darmawanweb/ais-its-nest/audit';
 import { DomainError } from '@darmawanweb/ais-its-nest';
-import { MetricsService } from '@darmawanweb/ais-its-nest/metrics';
+import {
+  type Counter,
+  MetricsService,
+} from '@darmawanweb/ais-its-nest/metrics';
 import { InjectRedis, type Redis } from '@darmawanweb/ais-its-nest/redis';
 import { Injectable } from '@nestjs/common';
 
 import { AuthErrors } from '../../common/errors.js';
-import type { CounterMetric } from '../../common/metrics.js';
 import { type ClientInfo, clientInfo } from '../../common/principals.js';
 import type { UserRow } from '../../db/database.js';
+import { Transactions } from '../../db/transactions.js';
 import { accessRoles } from '../../domain/access-rules.js';
 import { normalizeEmail } from '../../domain/identity.js';
 import {
@@ -57,7 +60,7 @@ export type SignInRequest = AuditRequest & {
  */
 @Injectable()
 export class AuthenticationService {
-  private readonly logins: CounterMetric;
+  private readonly logins: Counter<'outcome'>;
 
   constructor(
     private readonly users: UsersRepository,
@@ -68,6 +71,7 @@ export class AuthenticationService {
     private readonly tokens: TokenService,
     private readonly mfa: MfaService,
     private readonly audit: AuditService,
+    private readonly transactions: Transactions,
     @InjectRedis() private readonly redis: Redis,
     metrics: MetricsService,
   ) {
@@ -176,28 +180,40 @@ export class AuthenticationService {
     const memberships = await this.memberships.listOfUser(user.id);
     const first = memberships[0];
     const activeOrgId = first?.organization.id ?? null;
-    const opened = await this.sessions.open(user, activeOrgId, client);
-    await this.users.recordLogin(user.id);
+    // The session, the sign-in time and the audit record commit together.
+    const opened = await this.transactions.run(async ({ tx, audit }) => {
+      const session = await this.sessions.open(user, activeOrgId, client, tx);
+      await this.users.recordLogin(user.id, tx);
+      await audit(
+        {
+          action: 'auth.login.succeeded',
+          targetType: 'session',
+          targetId: session.session.id,
+          orgId: activeOrgId,
+          meta: { mfa },
+        },
+        actorOf(
+          user,
+          session.session,
+          accessRoles(first?.membership.role ?? null, user.isPlatformAdmin),
+        ),
+        request,
+      );
+      return session;
+    });
     this.logins.inc({ outcome: 'success' });
-    await this.audit.record(
-      {
-        action: 'auth.login.succeeded',
-        targetType: 'session',
-        targetId: opened.session.id,
-        orgId: activeOrgId,
-        meta: { mfa },
-      },
-      actorOf(
-        user,
-        opened.session,
-        accessRoles(first?.membership.role ?? null, user.isPlatformAdmin),
-      ),
-      request,
-    );
     return { kind: 'signed_in', user, memberships, activeOrgId, opened };
   }
 
-  /** Counts and audits a failed attempt (throttled attempts are only counted), then rethrows. */
+  /**
+   * Counts and audits a failed attempt (throttled attempts are only counted),
+   * then rethrows. The only best-effort record of the service
+   * (`AuditService.record`, not the outbox): a failed attempt changes
+   * nothing to commit with, and writing a row per attempt would turn a
+   * credential-stuffing run into database write load; during a NATS outage
+   * such records are dropped and counted (`aisits_audit_failures_total`),
+   * while `aisits_auth_logins_total{outcome}` still counts every attempt.
+   */
   private async observeFailure<T>(
     email: string,
     stage: 'password' | 'mfa',

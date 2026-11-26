@@ -3,6 +3,7 @@ import {
   CurrentPrincipal,
   type Principal,
   Public,
+  RequirePlatformAdmin,
 } from '@darmawanweb/ais-its-nest/auth';
 import {
   Controller,
@@ -46,6 +47,7 @@ export class KeysController {
   constructor(private readonly keys: KeysService) {}
 
   @Post('rotate')
+  @RequirePlatformAdmin()
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
